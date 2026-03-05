@@ -1,0 +1,21 @@
+{
+  "name": "wispr-flow-linux",
+  "version": "1.0.0",
+  "description": "Wispr Flow for Linux - repackaged from Windows Electron build",
+  "scripts": {
+    "download": "node scripts/download.js",
+    "extract": "node scripts/extract.js",
+    "patch": "node scripts/patch.js",
+    "rebuild-native": "node scripts/rebuild-native.js",
+    "package-deb": "node scripts/package-deb.js",
+    "package-appimage": "node scripts/package-appimage.js",
+    "build": "npm run download && npm run extract && npm run patch && npm run rebuild-native && npm run package-deb",
+    "build:appimage": "npm run download && npm run extract && npm run patch && npm run rebuild-native && npm run package-appimage",
+    "clean": "rm -rf build dist tmp"
+  },
+  "dependencies": {
+    "asar": "^3.2.0",
+    "electron-packager": "^17.1.2"
+  },
+  "license": "MIT"
+}
