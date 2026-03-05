@@ -1,0 +1,9 @@
+node_modules/
+tmp/
+build/
+dist/
+*.exe
+*.nupkg
+*.deb
+*.AppImage
+*.zip
