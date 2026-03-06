@@ -9,8 +9,8 @@
     "rebuild-native": "node scripts/rebuild-native.js",
     "package-deb": "node scripts/package-deb.js",
     "package-appimage": "node scripts/package-appimage.js",
-    "build": "yarn download && yarn extract && yarn patch && yarn rebuild-native && yarn package-deb",
-    "build:appimage": "yarn download && yarn extract && yarn patch && yarn rebuild-native && yarn package-appimage",
+    "build": "yarn run download && yarn run extract && yarn run patch && yarn run rebuild-native && yarn run package-deb",
+    "build:appimage": "yarn run download && yarn run extract && yarn run patch && yarn run rebuild-native && yarn run package-appimage",
     "clean": "rm -rf build dist tmp",
     "test": "jest --verbose"
   },
@@ -20,6 +20,7 @@
   },
   "license": "MIT",
   "devDependencies": {
+    "@types/jest": "^30.0.0",
     "jest": "^30.2.0"
   }
 }

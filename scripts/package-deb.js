@@ -101,7 +101,7 @@ function createDesktopFile(version) {
   return `[Desktop Entry]
 Name=Wispr Flow
 Comment=Voice-typing made perfect
-Exec=/opt/wispr-flow/wispr-flow %U
+Exec=/opt/wispr-flow/wispr-flow --no-sandbox %U
 Icon=wispr-flow
 Type=Application
 Categories=Utility;Accessibility;

@@ -94,16 +94,8 @@ function patchMainBundle() {
 
   if (spawnMatch) {
     const spawnModule = spawnMatch[1];
-    // Replace with platform-aware spawn
-    const replacement = `helper.process="linux"===process.platform?(0,${spawnModule}.spawn)(process.execPath,[r],{stdio:["pipe","pipe","pipe","pipe"]`)`;
-
-    // But we also need to keep the Windows version
-    const originalSpawn = spawnMatch[0];
-    const patchedSpawn = `helper.process="linux"===process.platform?(0,${spawnModule}.spawn)(process.execPath,[r],{stdio:["pipe","pipe","pipe","pipe"]:(0,${spawnModule}.spawn)(r,{stdio:["pipe","pipe","pipe","pipe"]`;
-
-    // Actually, simpler approach: just replace the spawn call conditionally
     code = code.replace(
-      originalSpawn,
+      spawnMatch[0],
       `helper.process="linux"===process.platform?(0,${spawnModule}.spawn)(process.execPath,[r],{stdio:["pipe","pipe","pipe","pipe"]`
     );
     console.log('  Patched helper spawn: use node to run .js helper on Linux');

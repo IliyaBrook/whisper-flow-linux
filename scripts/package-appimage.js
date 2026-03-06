@@ -56,7 +56,7 @@ function buildAppImage(metadata) {
 HERE="$(dirname "$(readlink -f "\${0}")")"
 export PATH="\${HERE}:\${PATH}"
 export LD_LIBRARY_PATH="\${HERE}:\${LD_LIBRARY_PATH}"
-exec "\${HERE}/wispr-flow" "$@"
+exec "\${HERE}/wispr-flow" --no-sandbox "$@"
 `;
   fs.writeFileSync(path.join(appImageDir, 'AppRun'), appRun);
   execSync(`chmod +x "${path.join(appImageDir, 'AppRun')}"`, { stdio: 'pipe' });

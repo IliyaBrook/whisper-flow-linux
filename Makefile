@@ -7,25 +7,25 @@ APPIMAGE := $(wildcard dist/Wispr_Flow-*-x86_64.AppImage)
 build: build-deb
 
 build-deb: download extract patch rebuild-native
-	yarn package-deb
+	yarn run package-deb
 
 build-appimage: download extract patch rebuild-native
-	yarn package-appimage
+	yarn run package-appimage
 
 download:
-	yarn download
+	yarn run download
 
 extract:
-	yarn extract
+	yarn run extract
 
 patch:
-	yarn patch
+	yarn run patch
 
 rebuild-native:
-	yarn rebuild-native
+	yarn run rebuild-native
 
 test:
-	yarn test
+	yarn run test
 
 run:
 ifndef DEB
@@ -34,16 +34,16 @@ ifndef APPIMAGE
 endif
 endif
 ifdef APPIMAGE
-	./$(APPIMAGE)
+	./$(APPIMAGE) --no-sandbox
 else
-	/opt/wispr-flow/wispr-flow
+	/opt/wispr-flow/wispr-flow --no-sandbox
 endif
 
 run-debug:
 ifdef APPIMAGE
-	ELECTRON_ENABLE_LOGGING=1 ./$(APPIMAGE) --enable-logging
+	ELECTRON_ENABLE_LOGGING=1 ./$(APPIMAGE) --no-sandbox --enable-logging
 else
-	ELECTRON_ENABLE_LOGGING=1 /opt/wispr-flow/wispr-flow --enable-logging
+	ELECTRON_ENABLE_LOGGING=1 /opt/wispr-flow/wispr-flow --no-sandbox --enable-logging
 endif
 
 install:
