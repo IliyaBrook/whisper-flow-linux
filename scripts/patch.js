@@ -179,6 +179,46 @@ function patchMainBundle() {
     console.log('  Patched mac-ca: replaced with no-op');
   }
 
+  // ---- Patch 8: Protocol handler — enable single-instance and argv scanning on Linux ----
+  // The original code gates requestSingleInstanceLock() and second-instance behind
+  // b.H8 (isWindows). On Linux, protocol URLs are passed via argv to a second instance,
+  // so we need the same logic. Change b.H8 to (b.H8||"linux"===process.platform).
+  const protocolPattern = /,([a-z])\.H8\)\{if\(!n\.app\.requestSingleInstanceLock\(\)\)/;
+  const protocolMatch = code.match(protocolPattern);
+  if (protocolMatch) {
+    const platformVar = protocolMatch[1];
+    const oldCheck = `,${platformVar}.H8){if(!n.app.requestSingleInstanceLock())`;
+    const newCheck = `,${platformVar}.H8||"linux"===process.platform){if(!n.app.requestSingleInstanceLock())`;
+    code = code.replace(oldCheck, newCheck);
+    console.log('  Patched protocol handler: enabled single-instance lock on Linux');
+  } else {
+    console.warn('  WARNING: Could not find protocol handler platform check');
+  }
+
+  // ---- Patch 9: Tray menu — fix macOS accelerators for Linux ----
+  // Menu items use "Command+Q", "Command+/", "Command+," which are macOS-specific.
+  // On Linux, "Command" maps to Super key which is usually not what users expect.
+  // Replace with "Ctrl" equivalents on Linux via a runtime check.
+  // Simpler approach: just replace the hardcoded "Command+" strings.
+  const commandAccelCount = (code.match(/accelerator:"Command\+/g) || []).length;
+  if (commandAccelCount > 0) {
+    code = code.replace(/accelerator:"Command\+/g, 'accelerator:"CommandOrControl+');
+    console.log(`  Patched ${commandAccelCount} tray/menu accelerators: Command+ → CommandOrControl+`);
+  }
+
+  // ---- Patch 10: Tray icon — add Linux icon support ----
+  // Original: i.tD?"TrayIconMac@2x.png":"TrayIconWindows.png"
+  // On Linux, use the Windows icon (it works fine) but add a click handler
+  // to show context menu (some Linux DEs only fire click, not right-click).
+  const trayClickPattern = 'r.setToolTip("Wispr Flow");const s=await b();return r.setContextMenu(s),r';
+  if (code.includes(trayClickPattern)) {
+    const trayClickReplacement = 'r.setToolTip("Wispr Flow");const s=await b();r.setContextMenu(s),r.on("click",()=>{r.popUpContextMenu(s)});return r';
+    code = code.replace(trayClickPattern, trayClickReplacement);
+    console.log('  Patched tray: added click handler for Linux context menu');
+  } else {
+    console.warn('  WARNING: Could not find tray click pattern for Linux fix');
+  }
+
   // ---- Write patched bundle ----
   fs.writeFileSync(MAIN_BUNDLE, code);
   const newSize = code.length;
