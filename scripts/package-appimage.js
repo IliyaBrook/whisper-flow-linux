@@ -71,50 +71,8 @@ source "$appdir/launcher-common.sh"
 setup_logging || exit 1
 setup_electron_env
 
-# --- Desktop Integration for wispr-flow:// URL scheme ---
-integrate_desktop() {
-	local desktop_dir="\${XDG_DATA_HOME:-\$HOME/.local/share}/applications"
-	local icon_dir="\${XDG_DATA_HOME:-\$HOME/.local/share}/icons/hicolor/256x256/apps"
-	local desktop_file="\$desktop_dir/wispr-flow-appimage.desktop"
-
-	mkdir -p "\$desktop_dir" "\$icon_dir" 2>/dev/null
-
-	# Copy icon if available
-	local icon_src="\$appdir/wispr-flow.png"
-	local icon_dest="\$icon_dir/wispr-flow.png"
-	if [[ -f \$icon_src ]]; then
-		if [[ ! -f \$icon_dest ]] || ! cmp -s "\$icon_src" "\$icon_dest"; then
-			cp "\$icon_src" "\$icon_dest" 2>/dev/null
-		fi
-	fi
-
-	# Create/update .desktop file if AppImage path changed or file doesn't exist
-	local current_exec=''
-	[[ -f \$desktop_file ]] && current_exec=\\$(grep '^Exec=' "\$desktop_file" 2>/dev/null | head -1)
-
-	if [[ ! -f \$desktop_file ]] || [[ \$current_exec != "Exec=\\"\${appimage_path}\\" %U" ]]; then
-		cat > "\$desktop_file" << DESKTOP
-[Desktop Entry]
-Name=Wispr Flow
-Exec="\${appimage_path}" %U
-Icon=wispr-flow
-Type=Application
-Terminal=false
-Categories=Utility;Accessibility;
-Comment=Voice-typing made perfect (AppImage)
-MimeType=x-scheme-handler/wispr-flow;
-StartupWMClass=Wispr Flow
-DESKTOP
-		log_message "Desktop file created/updated: \$desktop_file"
-	fi
-
-	# Update MIME database
-	update-desktop-database "\$desktop_dir" 2>/dev/null || true
-	xdg-mime default wispr-flow-appimage.desktop x-scheme-handler/wispr-flow 2>/dev/null || true
-}
-
-# Run desktop integration (non-blocking, errors are non-fatal)
-integrate_desktop 2>/dev/null || true
+# Register wispr-flow:// URL scheme (non-blocking, errors are non-fatal)
+integrate_desktop "$appdir" "$appimage_path" 2>/dev/null || true
 
 # Detect display backend
 detect_display_backend
