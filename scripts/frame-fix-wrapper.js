@@ -22,6 +22,28 @@ function isOverlayWindow(options) {
 	return false;
 }
 
+// CSS to fix sidebar scrolling on Linux — the sidebar has no overflow
+// set, so when the window is shorter than content, it clips.
+const LINUX_SIDEBAR_CSS = `
+  /* Fix sidebar scroll when window height < content */
+  .KsLRKbYTWPTkbHC7lssN > .cHx1jPbInzLdZs5bVsGu > .DYfDg1NbrLuoPJVIlR_w {
+    overflow-y: auto !important;
+  }
+`;
+
+// Resolve the Wispr Flow logo for window icon
+function getAppIconPath() {
+	try {
+		const path = require('path');
+		const fs = require('fs');
+		// In packaged app, process.resourcesPath = .../resources/
+		// The logo is at resources/assets/logos/wispr-logo.png
+		const p = path.join(process.resourcesPath || '', 'assets', 'logos', 'wispr-logo.png');
+		if (fs.existsSync(p)) return p;
+	} catch (e) { /* ignore */ }
+	return null;
+}
+
 // Build patched classes once, reuse via Proxy.
 let PatchedBrowserWindow = null;
 let patchedSetApplicationMenu = null;
@@ -123,6 +145,23 @@ Module.prototype.require = function(id) {
 
 						if (!isOverlay) {
 							this.setMenuBarVisibility(false);
+
+							// Set window icon (fixes Safari icon in taskbar/Alt+Tab)
+							const iconPath = getAppIconPath();
+							if (iconPath) {
+								try {
+									const { nativeImage } = require('electron');
+									this.setIcon(nativeImage.createFromPath(iconPath));
+									console.log('[Frame Fix] Window icon set:', iconPath);
+								} catch (e) {
+									console.log('[Frame Fix] Could not set icon:', e.message);
+								}
+							}
+
+							// Inject CSS to fix sidebar scrolling
+							this.webContents.on('did-finish-load', () => {
+								this.webContents.insertCSS(LINUX_SIDEBAR_CSS).catch(() => {});
+							});
 
 							this.on('show', () => {
 								this.setMenuBarVisibility(false);
