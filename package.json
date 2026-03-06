@@ -9,8 +9,8 @@
     "rebuild-native": "node scripts/rebuild-native.js",
     "package-deb": "node scripts/package-deb.js",
     "package-appimage": "node scripts/package-appimage.js",
-    "build": "npm run download && npm run extract && npm run patch && npm run rebuild-native && npm run package-deb",
-    "build:appimage": "npm run download && npm run extract && npm run patch && npm run rebuild-native && npm run package-appimage",
+    "build": "yarn download && yarn extract && yarn patch && yarn rebuild-native && yarn package-deb",
+    "build:appimage": "yarn download && yarn extract && yarn patch && yarn rebuild-native && yarn package-appimage",
     "clean": "rm -rf build dist tmp",
     "test": "jest --verbose"
   },

@@ -55,21 +55,24 @@ sudo apt install build-essential python3 node-gyp
 
 ```bash
 # Install dependencies
-npm install
+yarn install
 
 # Full build (download → extract → patch → rebuild → package .deb)
-npm run build
+yarn build
 
 # Or step by step:
-npm run download        # Download Windows installer
-npm run extract         # Extract app from installer
-npm run patch           # Patch for Linux
-npm run rebuild-native  # Rebuild sqlite3 for Linux
-npm run package-deb     # Create .deb package
-npm run package-appimage # Create AppImage (alternative)
+yarn download        # Download Windows installer
+yarn extract         # Extract app from installer
+yarn patch           # Patch for Linux
+yarn rebuild-native  # Rebuild sqlite3 for Linux
+yarn package-deb     # Create .deb package
+yarn package-appimage # Create AppImage (alternative)
+
+# Run tests
+yarn test
 
 # Clean all build artifacts
-npm run clean
+yarn clean
 ```
 
 ## Install
