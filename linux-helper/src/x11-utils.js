@@ -11,6 +11,11 @@ const execAsync = promisify(exec);
  * Detect display server (X11 or Wayland)
  */
 function getDisplayServer() {
+  // Launcher sets WISPR_DISPLAY_BACKEND=x11 when using XWayland mode on Wayland,
+  // so the helper uses X11 tools (xdotool/xclip) which work via XWayland.
+  const override = process.env.WISPR_DISPLAY_BACKEND;
+  if (override === 'x11' || override === 'wayland') return override;
+
   const xdgSession = process.env.XDG_SESSION_TYPE || '';
   if (xdgSession === 'wayland') return 'wayland';
   if (xdgSession === 'x11') return 'x11';

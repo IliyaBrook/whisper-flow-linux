@@ -54,6 +54,8 @@ build_electron_args() {
 	if [[ $use_x11_on_wayland == true ]]; then
 		log_message 'Using X11 backend via XWayland'
 		electron_args+=('--ozone-platform=x11')
+		# Tell the helper to use X11 tools even though XDG_SESSION_TYPE=wayland
+		export WISPR_DISPLAY_BACKEND=x11
 	else
 		log_message 'Using native Wayland backend'
 		electron_args+=('--enable-features=UseOzonePlatform,WaylandWindowDecorations')
