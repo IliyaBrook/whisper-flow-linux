@@ -216,36 +216,26 @@ async function getClipboard() {
  */
 async function setClipboard(text) {
   try {
+    let cmd;
     if (displayServer === 'wayland' && tools.wlCopy) {
-      const { exec: execCb } = require('child_process');
-      return new Promise((resolve, reject) => {
-        const proc = execCb('wl-copy', (err) => err ? reject(err) : resolve());
-        proc.stdin.write(text);
-        proc.stdin.end();
-      });
+      cmd = 'wl-copy';
+    } else if (tools.xclip) {
+      cmd = 'xclip -selection clipboard';
+    } else if (tools.xsel) {
+      cmd = 'xsel --clipboard --input';
+    } else {
+      return;
     }
-    if (tools.xclip) {
-      return new Promise((resolve, reject) => {
-        const proc = require('child_process').exec(
-          'xclip -selection clipboard',
-          (err) => err ? reject(err) : resolve()
-        );
-        proc.stdin.write(text);
-        proc.stdin.end();
+
+    return new Promise((resolve, reject) => {
+      const proc = require('child_process').exec(cmd, { timeout: 2000 }, (err) => {
+        if (err) reject(err); else resolve();
       });
-    }
-    if (tools.xsel) {
-      return new Promise((resolve, reject) => {
-        const proc = require('child_process').exec(
-          'xsel --clipboard --input',
-          (err) => err ? reject(err) : resolve()
-        );
-        proc.stdin.write(text);
-        proc.stdin.end();
-      });
-    }
+      proc.stdin.write(text);
+      proc.stdin.end();
+    });
   } catch (err) {
-    console.error(`setClipboard error: ${err.message}`);
+    console.error(`[PASTE] setClipboard error: ${err.message}`);
   }
 }
 
@@ -260,36 +250,21 @@ async function setClipboard(text) {
 async function pasteText(text, htmlText) {
   const startTime = Date.now();
   let success = false;
-  let clipboardOk = false;
 
   try {
-    // Save current clipboard
-    const savedClipboard = await getClipboard();
-
-    // Set new clipboard content
+    // Set clipboard content (Electron already saves/restores clipboard itself)
     await setClipboard(text);
 
-    // Wait for clipboard to be registered by X server
-    await sleep(100);
+    // Wait for X server to register the clipboard ownership
+    await sleep(80);
 
-    // Verify clipboard was set
-    const verify = await getClipboard();
-    clipboardOk = verify === text;
-
-    // Simulate Ctrl+V — target stored window directly if available (X11)
-    if (displayServer === 'x11' && tools.xdotool && storedWindowId) {
-      await execAsync(`xdotool key --window ${storedWindowId} --clearmodifiers ctrl+v`, { timeout: 3000 });
+    // Simulate Ctrl+V on the currently focused window
+    // (handler already focused the stored window before calling us)
+    // Note: do NOT use --window flag — it uses XSendEvent which apps can ignore
+    if (displayServer === 'x11' && tools.xdotool) {
+      await execAsync('xdotool key --clearmodifiers ctrl+v', { timeout: 2000 });
     } else {
       await simulateKeyCombo(['ctrl', 'v']);
-    }
-
-    // Wait for paste to complete
-    await sleep(150);
-
-    // Restore clipboard
-    if (savedClipboard) {
-      await sleep(200);
-      await setClipboard(savedClipboard);
     }
 
     success = true;
@@ -298,7 +273,7 @@ async function pasteText(text, htmlText) {
   }
 
   const elapsed = Date.now() - startTime;
-  console.log(`[PASTE] ${text?.length || 0} chars, clipboard=${clipboardOk ? 'ok' : 'MISMATCH'}, window=${storedWindowId || 'none'}, success=${success}, ${elapsed}ms`);
+  console.log(`[PASTE] ${text?.length || 0} chars, window=${storedWindowId || 'none'}, success=${success}, ${elapsed}ms`);
 
   return { success, timeElapsedMs: elapsed };
 }
@@ -414,7 +389,7 @@ async function focusStoredWindow() {
   if (!storedWindowId) return;
   try {
     if (displayServer === 'x11' && tools.xdotool) {
-      await execAsync(`xdotool windowactivate --sync ${storedWindowId}`, { timeout: 3000 });
+      await execAsync(`xdotool windowactivate --sync ${storedWindowId}`, { timeout: 1000 });
     }
   } catch (err) {
     console.error(`[PASTE] focusStoredWindow error: ${err.message}`);
