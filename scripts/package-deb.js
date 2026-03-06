@@ -14,6 +14,7 @@ const APP_DIR = path.join(TMP_DIR, 'app');
 const ASAR_DIR = path.join(APP_DIR, 'asar-content');
 const DIST_DIR = path.join(__dirname, '..', 'dist');
 const BUILD_DIR = path.join(__dirname, '..', 'build');
+const LAUNCHER_SH = path.join(__dirname, 'launcher-common.sh');
 
 function getMetadata() {
   const metaPath = path.join(APP_DIR, 'metadata.json');
@@ -97,17 +98,49 @@ function assembleApp(electronDir, metadata) {
   return appDir;
 }
 
-function createDesktopFile(version) {
+function createDesktopFile() {
   return `[Desktop Entry]
 Name=Wispr Flow
 Comment=Voice-typing made perfect
-Exec=/opt/wispr-flow/wispr-flow --no-sandbox %U
+Exec=/usr/bin/wispr-flow %U
 Icon=wispr-flow
 Type=Application
 Categories=Utility;Accessibility;
 Keywords=voice;typing;dictation;speech;
 StartupWMClass=Wispr Flow
 MimeType=x-scheme-handler/wispr-flow;
+`;
+}
+
+function createLauncherScript() {
+  return `#!/usr/bin/env bash
+# Wispr Flow launcher - handles sandbox, Wayland, and logging
+
+# Source shared launcher library
+source /opt/wispr-flow/launcher-common.sh
+
+# Setup logging and environment
+setup_logging || exit 1
+setup_electron_env
+
+# Detect display backend
+detect_display_backend
+
+# Log startup info
+log_message '--- Wispr Flow Start ---'
+log_message "Timestamp: $(date)"
+log_message "Arguments: $@"
+
+# Build electron args
+build_electron_args 'deb'
+
+# Execute
+log_message "Executing: /opt/wispr-flow/wispr-flow \${electron_args[*]} $*"
+if [[ \${WISPR_DEBUG:-0} == 1 ]]; then
+	/opt/wispr-flow/wispr-flow "\${electron_args[@]}" "$@" 2>&1 | tee -a "$log_file"
+else
+	exec /opt/wispr-flow/wispr-flow "\${electron_args[@]}" "$@" >> "$log_file" 2>&1
+fi
 `;
 }
 
@@ -138,13 +171,17 @@ function buildDeb(appDir, metadata) {
   // Copy application files
   execSync(`cp -r "${appDir}/"* "${path.join(debDir, 'opt', 'wispr-flow')}/"`, { stdio: 'pipe' });
 
-  // Create symlink for /usr/bin
-  fs.symlinkSync('/opt/wispr-flow/wispr-flow', path.join(debDir, 'usr', 'bin', 'wispr-flow'));
+  // Copy launcher-common.sh into /opt/wispr-flow/
+  fs.copyFileSync(LAUNCHER_SH, path.join(debDir, 'opt', 'wispr-flow', 'launcher-common.sh'));
+
+  // Create launcher script at /usr/bin/wispr-flow
+  fs.writeFileSync(path.join(debDir, 'usr', 'bin', 'wispr-flow'), createLauncherScript());
+  execSync(`chmod +x "${path.join(debDir, 'usr', 'bin', 'wispr-flow')}"`, { stdio: 'pipe' });
 
   // Create .desktop file
   fs.writeFileSync(
     path.join(debDir, 'usr', 'share', 'applications', 'wispr-flow.desktop'),
-    createDesktopFile(version)
+    createDesktopFile()
   );
 
   // Copy icon if available
@@ -212,8 +249,12 @@ if [ -x /usr/bin/update-desktop-database ]; then
     update-desktop-database /usr/share/applications/ 2>/dev/null || true
 fi
 
-# Set sandbox permissions
-chmod 4755 /opt/wispr-flow/chrome-sandbox 2>/dev/null || true
+# Set correct permissions for chrome-sandbox (required for SUID sandbox on X11)
+SANDBOX_PATH="/opt/wispr-flow/chrome-sandbox"
+if [ -f "$SANDBOX_PATH" ]; then
+    chown root:root "$SANDBOX_PATH" || echo "Warning: Failed to chown chrome-sandbox"
+    chmod 4755 "$SANDBOX_PATH" || echo "Warning: Failed to chmod chrome-sandbox"
+fi
 
 echo "Wispr Flow installed successfully!"
 echo "Required tools: xdotool, xclip (install: sudo apt install xdotool xclip)"

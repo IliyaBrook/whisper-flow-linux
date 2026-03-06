@@ -86,18 +86,43 @@ function patchMainBundle() {
   }
 
   // ---- Patch 2: Helper spawn - use node for Linux helper ----
-  // Original: (0,i.spawn)(r, {stdio: ["pipe","pipe","pipe","pipe"], env: {...}})
-  // For Linux: spawn("node", [r], {stdio: ...}) since our helper is a .js file
+  // Original: helper.process=(0,i.spawn)(r,{stdio:[...],env:{...}})
+  // For Linux: spawn(process.execPath, [r], {stdio:[...],env:{...}})
 
-  const spawnPattern = /helper\.process=\(0,(\w+)\.spawn\)\(r,\{stdio:\["pipe","pipe","pipe","pipe"\]/;
-  const spawnMatch = code.match(spawnPattern);
+  // Match: helper.process=(0,i.spawn)(r,{stdio:["pipe","pipe","pipe","pipe"],env:{...}})
+  // The env may have nested ternaries, so we find the second call's closing paren via balanced matching
+  const spawnModuleMatch = code.match(/helper\.process=\(0,(\w+)\.spawn\)\(r,\{stdio:\["pipe","pipe","pipe","pipe"\]/);
 
-  if (spawnMatch) {
-    const spawnModule = spawnMatch[1];
-    code = code.replace(
-      spawnMatch[0],
-      `helper.process="linux"===process.platform?(0,${spawnModule}.spawn)(process.execPath,[r],{stdio:["pipe","pipe","pipe","pipe"]`
-    );
+  if (spawnModuleMatch) {
+    const spawnModule = spawnModuleMatch[1];
+    const marker = `(0,${spawnModule}.spawn)(r,{stdio:["pipe","pipe","pipe","pipe"]`;
+    const markerIdx = code.indexOf(marker, spawnModuleMatch.index);
+
+    // Find closing ) for the second call (r,{...}) by tracking balanced parens
+    // Start from the second '(' — the args call
+    const argsStart = markerIdx + `(0,${spawnModule}.spawn)`.length;
+    let depth = 0;
+    let end = argsStart;
+    for (; end < code.length; end++) {
+      if (code[end] === '(') depth++;
+      if (code[end] === ')') {
+        depth--;
+        if (depth === 0) { end++; break; }
+      }
+    }
+
+    // fullSpawnExpr includes both parts: (0,i.spawn)(r,{...})
+    const assignStart = spawnModuleMatch.index + 'helper.process='.length;
+    const fullSpawnExpr = code.slice(assignStart, end);
+
+    // Extract the options object from the args call
+    const argsCallStr = code.slice(argsStart, end); // (r,{stdio:[...],env:{...}})
+    const optsStr = argsCallStr.slice(argsCallStr.indexOf(',') + 1, argsCallStr.lastIndexOf(')'));
+
+    const linuxSpawn = `(0,${spawnModule}.spawn)(process.execPath,[r],${optsStr})`;
+    const replacement = `helper.process="linux"===process.platform?${linuxSpawn}:${fullSpawnExpr}`;
+
+    code = code.slice(0, spawnModuleMatch.index) + replacement + code.slice(end);
     console.log('  Patched helper spawn: use node to run .js helper on Linux');
   } else {
     console.warn('  WARNING: Could not find helper spawn pattern');
@@ -121,11 +146,32 @@ function patchMainBundle() {
     console.log('  Patched electron-squirrel-startup: always false');
   }
 
-  // ---- Patch 5: Auto-update ----
+  // ---- Patch 5: Disable macOS "Applications folder" check ----
+  // The app checks if it's in /Applications on macOS. On Linux this always
+  // fails and shows a blocking dialog. Add a Linux platform guard.
+  // Find the Applications folder check near "Move Flow to Applications folder" string
+  const appsFolderIdx = code.indexOf('Move Flow to Applications folder');
+  if (appsFolderIdx !== -1) {
+    // Search backwards for the if-condition
+    const searchRegion = code.slice(Math.max(0, appsFolderIdx - 500), appsFolderIdx);
+    const condMatch = searchRegion.match(/if\("production"===(\w+)\.(\w+)&&!(\w+)\)/);
+    if (condMatch) {
+      const original = `if("production"===${condMatch[1]}.${condMatch[2]}&&!${condMatch[3]})`;
+      const patched = `if("production"===${condMatch[1]}.${condMatch[2]}&&"linux"!==process.platform&&!${condMatch[3]})`;
+      code = code.replace(original, patched);
+      console.log('  Patched Applications folder check: skip on Linux');
+    } else {
+      console.warn('  WARNING: Found "Move Flow to Applications folder" but could not match condition');
+    }
+  } else {
+    console.warn('  WARNING: Could not find Applications folder check');
+  }
+
+  // ---- Patch 6: Auto-update ----
   // Disable Squirrel auto-updater on Linux (it's Windows-only)
   // We'll handle updates differently on Linux
 
-  // ---- Patch 6: mac-ca module ----
+  // ---- Patch 7: mac-ca module ----
   // Similar to win-ca, mac-ca loads macOS certificate store
   const macCaPattern = /require\("mac-ca"\)/g;
   if (code.match(macCaPattern)) {

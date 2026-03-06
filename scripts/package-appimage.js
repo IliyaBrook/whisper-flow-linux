@@ -12,6 +12,7 @@ const TMP_DIR = path.join(__dirname, '..', 'tmp');
 const APP_DIR = path.join(TMP_DIR, 'app');
 const BUILD_DIR = path.join(__dirname, '..', 'build');
 const DIST_DIR = path.join(__dirname, '..', 'dist');
+const LAUNCHER_SH = path.join(__dirname, 'launcher-common.sh');
 
 function getMetadata() {
   const metaPath = path.join(APP_DIR, 'metadata.json');
@@ -51,12 +52,48 @@ function buildAppImage(metadata) {
   // Copy app files
   execSync(`cp -r "${appDir}/"* "${appImageDir}/"`, { stdio: 'pipe' });
 
+  // Copy launcher-common.sh into AppDir
+  fs.copyFileSync(LAUNCHER_SH, path.join(appImageDir, 'launcher-common.sh'));
+
   // Create AppRun script
-  const appRun = `#!/bin/bash
-HERE="$(dirname "$(readlink -f "\${0}")")"
-export PATH="\${HERE}:\${PATH}"
-export LD_LIBRARY_PATH="\${HERE}:\${LD_LIBRARY_PATH}"
-exec "\${HERE}/wispr-flow" --no-sandbox "$@"
+  const appRun = `#!/usr/bin/env bash
+
+# Find the location of the AppRun script
+appdir=$(dirname "$(readlink -f "$0")")
+appimage_path="$(readlink -f "$0")"
+# If launched from mounted AppImage, APPIMAGE env var points to the actual .AppImage file
+[[ -n $APPIMAGE ]] && appimage_path="$APPIMAGE"
+
+# Source shared launcher library
+source "$appdir/launcher-common.sh"
+
+# Setup logging and environment
+setup_logging || exit 1
+setup_electron_env
+
+# Detect display backend
+detect_display_backend
+
+# Log startup info
+log_message '--- Wispr Flow AppImage Start ---'
+log_message "Timestamp: $(date)"
+log_message "Arguments: $@"
+log_message "APPDIR: $appdir"
+log_message "APPIMAGE: $appimage_path"
+
+# Build electron args (appimage mode adds --no-sandbox)
+build_electron_args 'appimage'
+
+# Change to HOME to avoid CWD permission issues in FUSE mount
+cd "$HOME" || exit 1
+
+# Execute
+log_message "Executing: $appdir/wispr-flow \${electron_args[*]} $*"
+if [[ \${WISPR_DEBUG:-0} == 1 ]]; then
+	"$appdir/wispr-flow" "\${electron_args[@]}" "$@" 2>&1 | tee -a "$log_file"
+else
+	exec "$appdir/wispr-flow" "\${electron_args[@]}" "$@" >> "$log_file" 2>&1
+fi
 `;
   fs.writeFileSync(path.join(appImageDir, 'AppRun'), appRun);
   execSync(`chmod +x "${path.join(appImageDir, 'AppRun')}"`, { stdio: 'pipe' });

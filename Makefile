@@ -30,20 +30,20 @@ test:
 run:
 ifndef DEB
 ifndef APPIMAGE
-	$(error No build found. Run 'make build' first)
+	$(error No build found. Run 'make build' or 'make build-appimage' first)
 endif
 endif
 ifdef APPIMAGE
-	./$(APPIMAGE) --no-sandbox
+	./$(APPIMAGE)
 else
 	/opt/wispr-flow/wispr-flow --no-sandbox
 endif
 
 run-debug:
 ifdef APPIMAGE
-	ELECTRON_ENABLE_LOGGING=1 ./$(APPIMAGE) --no-sandbox --enable-logging
+	WISPR_DEBUG=1 ./$(APPIMAGE)
 else
-	ELECTRON_ENABLE_LOGGING=1 /opt/wispr-flow/wispr-flow --no-sandbox --enable-logging
+	WISPR_DEBUG=1 ELECTRON_ENABLE_LOGGING=1 /opt/wispr-flow/wispr-flow --no-sandbox --enable-logging
 endif
 
 install:
