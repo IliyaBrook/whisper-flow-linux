@@ -119,10 +119,11 @@ function patchMainBundle() {
     const argsCallStr = code.slice(argsStart, end); // (r,{stdio:[...],env:{...}})
     const optsStr = argsCallStr.slice(argsCallStr.indexOf(',') + 1, argsCallStr.lastIndexOf(')'));
 
-    // Add ELECTRON_RUN_AS_NODE=1 to env so Electron binary acts as Node.js
-    // Without this, spawning process.execPath launches a full Electron process
-    // which fails with sandbox SUID errors
-    const linuxOptsStr = optsStr.replace(/env:\{/, 'env:{ELECTRON_RUN_AS_NODE:"1",');
+    // For Linux helper:
+    // 1. ELECTRON_RUN_AS_NODE=1 makes Electron binary act as Node.js
+    // 2. ...process.env inherits DISPLAY, PATH, HOME, XDG_SESSION_TYPE etc.
+    //    Without this, the helper can't connect to X11/Wayland (xinput fails)
+    const linuxOptsStr = optsStr.replace(/env:\{/, 'env:{...process.env,ELECTRON_RUN_AS_NODE:"1",');
     const linuxSpawn = `(0,${spawnModule}.spawn)(process.execPath,[r],${linuxOptsStr})`;
     const replacement = `helper.process="linux"===process.platform?${linuxSpawn}:${fullSpawnExpr}`;
 

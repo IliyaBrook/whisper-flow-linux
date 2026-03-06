@@ -53,12 +53,8 @@ class Handler {
         // Give the ShortcutManager access to IPC and start key monitoring
         this.shortcutManager.setIPC(ipc);
         this.shortcutManager.start();
+        // Electron expects just an ACK response for IsReady
         ipc.sendACK(uuid);
-        // Also send readiness signal
-        ipc.sendRequest({
-          uuid: this._uuid(),
-          IsReady: true,
-        });
         break;
 
       case 'HelperAppShutdown':
