@@ -86,6 +86,11 @@ class Handler {
         // Send ACK immediately so Electron doesn't timeout
         ipc.sendACK(uuid);
 
+        // Restore focus to the window that was active when dictation started
+        // (overlay windows with focusable:true may have stolen focus)
+        await x11.focusStoredWindow();
+        await x11.sleep(150);
+
         // Perform paste asynchronously
         const result = await x11.pasteText(payload.text, payload.htmlText);
 
@@ -152,6 +157,7 @@ class Handler {
       }
 
       case 'StoreFocusedAppAndElement':
+        console.log('[Handler] StoreFocusedAppAndElement: storing focused window');
         await x11.storeFocusedWindow();
         ipc.sendACK(uuid);
         break;
@@ -225,6 +231,12 @@ class Handler {
 
       // ========== Dictation Events ==========
       case 'DictationStart':
+        // Store the currently focused window so we can restore focus before pasting
+        await x11.storeFocusedWindow();
+        console.log('[Handler] DictationStart: stored focused window');
+        ipc.sendACK(uuid);
+        break;
+
       case 'DictationStop':
       case 'RecordingStarted':
       case 'PlayDictationStartSound':

@@ -261,17 +261,36 @@ async function pasteText(text, htmlText) {
   const startTime = Date.now();
   let success = false;
 
+  console.log(`[pasteText] Starting paste, text length: ${text?.length || 0}, display: ${displayServer}`);
+
   try {
     // Save current clipboard
     const savedClipboard = await getClipboard();
+    console.log(`[pasteText] Saved clipboard, length: ${savedClipboard?.length || 0}`);
 
     // Set new clipboard content
     await setClipboard(text);
+    console.log(`[pasteText] Clipboard set with new text`);
 
     // Small delay to ensure clipboard is set
     await sleep(50);
 
+    // Verify clipboard was set
+    const verify = await getClipboard();
+    console.log(`[pasteText] Clipboard verify: ${verify === text ? 'OK' : 'MISMATCH'} (${verify?.length || 0} chars)`);
+
+    // Get focused window before paste
+    let focusedWindow = '';
+    try {
+      if (tools.xdotool) {
+        const { stdout } = await execAsync('xdotool getactivewindow getwindowname 2>/dev/null || echo "unknown"', { timeout: 2000 });
+        focusedWindow = stdout.trim();
+      }
+    } catch { /* ignore */ }
+    console.log(`[pasteText] Focused window before paste: "${focusedWindow}"`);
+
     // Simulate Ctrl+V
+    console.log(`[pasteText] Sending Ctrl+V via ${displayServer === 'x11' && tools.xdotool ? 'xdotool' : 'other'}`);
     await simulateKeyCombo(['ctrl', 'v']);
 
     // Wait for paste to complete
@@ -281,11 +300,14 @@ async function pasteText(text, htmlText) {
     if (savedClipboard) {
       await sleep(200);
       await setClipboard(savedClipboard);
+      console.log(`[pasteText] Clipboard restored`);
     }
 
     success = true;
+    console.log(`[pasteText] Paste completed in ${Date.now() - startTime}ms`);
   } catch (err) {
     console.error(`pasteText error: ${err.message}`);
+    console.error(err.stack);
   }
 
   return {
@@ -387,11 +409,19 @@ let storedWindowId = null;
 async function storeFocusedWindow() {
   try {
     if (displayServer === 'x11' && tools.xdotool) {
-      const { stdout } = await execAsync('xdotool getactivewindow');
+      const { stdout } = await execAsync('xdotool getactivewindow', { timeout: 2000 });
       storedWindowId = stdout.trim();
+      // Log window name for debugging
+      try {
+        const { stdout: name } = await execAsync(`xdotool getwindowname ${storedWindowId}`, { timeout: 2000 });
+        console.log(`[storeFocusedWindow] Stored window: ${storedWindowId} ("${name.trim()}")`);
+      } catch {
+        console.log(`[storeFocusedWindow] Stored window: ${storedWindowId}`);
+      }
     } else if (displayServer === 'wayland') {
       const info = await getActiveWindowInfo();
       storedWindowId = info.windowId;
+      console.log(`[storeFocusedWindow] Stored window: ${storedWindowId} ("${info.title}")`);
     }
   } catch (err) {
     console.error(`storeFocusedWindow error: ${err.message}`);
@@ -402,10 +432,22 @@ async function storeFocusedWindow() {
  * Restore focus to the stored window
  */
 async function focusStoredWindow() {
-  if (!storedWindowId) return;
+  if (!storedWindowId) {
+    console.log('[focusStoredWindow] No stored window ID, skipping');
+    return;
+  }
   try {
     if (displayServer === 'x11' && tools.xdotool) {
-      await execAsync(`xdotool windowactivate ${storedWindowId}`);
+      console.log(`[focusStoredWindow] Activating window: ${storedWindowId}`);
+      await execAsync(`xdotool windowactivate --sync ${storedWindowId}`, { timeout: 3000 });
+      // Verify focus was restored
+      const { stdout } = await execAsync('xdotool getactivewindow', { timeout: 2000 });
+      const currentId = stdout.trim();
+      if (currentId === storedWindowId) {
+        console.log(`[focusStoredWindow] Focus restored successfully`);
+      } else {
+        console.log(`[focusStoredWindow] Focus mismatch: expected ${storedWindowId}, got ${currentId}`);
+      }
     }
     // Wayland: depends on compositor, generally harder
   } catch (err) {

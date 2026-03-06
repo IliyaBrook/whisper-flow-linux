@@ -104,10 +104,7 @@ Module.prototype.require = function(id) {
 							// Overlay windows on Linux:
 							// 1. Remove type:"toolbar" — it binds the window to its parent,
 							//    making it only interactive when parent is focused.
-							// 2. Set focusable:true — on Linux, focusable:false makes the
-							//    window completely non-interactive (can't receive clicks).
-							//    On macOS/Windows, focusable:false only prevents focus steal
-							//    but still allows click interaction.
+							// 2. Keep focusable:true so overlay buttons can be clicked.
 							if (options.type === 'toolbar') {
 								delete options.type;
 							}
