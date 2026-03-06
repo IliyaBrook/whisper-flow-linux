@@ -1,16 +1,35 @@
 /**
  * Global keyboard monitoring for Linux Helper
- * Monitors key events via xinput (X11/XWayland) and forwards them
- * to Electron main process as KeypressEvent IPC messages.
+ * Monitors key events and forwards them to Electron main process
+ * as KeypressEvent IPC messages.
+ *
+ * On X11: uses xinput test-xi2 --root (captures all X11 key events)
+ * On Wayland: reads from /dev/input/event* (evdev) for true global capture,
+ *             falls back to xinput via XWayland if evdev is unavailable.
  *
  * The main process expects Windows VK codes (since isMac=false on Linux),
- * so we map X11 keycodes to Windows VK codes.
+ * so we map keycodes to Windows VK codes.
  */
 
 const { spawn } = require('child_process');
-const { displayServer } = require('./x11-utils');
+const fs = require('fs');
+
+// For keyboard monitoring, detect the REAL session type (not the
+// WISPR_DISPLAY_BACKEND override which is only for clipboard/window tools).
+// On Wayland+XWayland, xinput only sees events for XWayland windows,
+// so we must use evdev for true global key capture.
+function getRealSessionType() {
+  const xdg = process.env.XDG_SESSION_TYPE || '';
+  if (xdg === 'wayland') return 'wayland';
+  if (xdg === 'x11') return 'x11';
+  if (process.env.WAYLAND_DISPLAY) return 'wayland';
+  if (process.env.DISPLAY) return 'x11';
+  return 'unknown';
+}
+const sessionType = getRealSessionType();
 
 // X11 evdev keycode → Windows Virtual Key code
+// Note: evdev keycode = X11 keycode - 8
 const X11_TO_VK = {
   9: 27,    // Escape
   10: 49, 11: 50, 12: 51, 13: 52, 14: 53, 15: 54, 16: 55, 17: 56, 18: 57, 19: 48, // 1-0
@@ -61,13 +80,28 @@ const X11_TO_VK = {
   135: 93,  // Menu
 };
 
+// Evdev keycode → Windows VK code (evdev = X11 keycode - 8)
+const EVDEV_TO_VK = {};
+for (const [x11Code, vkCode] of Object.entries(X11_TO_VK)) {
+  const evdevCode = parseInt(x11Code, 10) - 8;
+  if (evdevCode >= 0) {
+    EVDEV_TO_VK[evdevCode] = vkCode;
+  }
+}
+
+// sizeof(struct input_event) on 64-bit Linux
+const INPUT_EVENT_SIZE = 24;
+const EV_KEY = 1;
+
 class ShortcutManager {
   constructor() {
     this.xinputProcess = null;
+    this.evdevProcesses = [];
     this.active = false;
     this.eventIndex = 0;
     this.ipc = null;
     this._currentEventType = null;
+    this._usingEvdev = false;
   }
 
   setIPC(ipc) {
@@ -82,8 +116,21 @@ class ShortcutManager {
   start() {
     if (this.active) return;
     this.active = true;
-    // xinput works on both X11 and XWayland (default Wayland mode)
-    this._startX11KeyMonitor();
+
+    if (sessionType === 'wayland') {
+      // On Wayland, try evdev first (true global capture),
+      // fall back to xinput via XWayland
+      const evdevStarted = this._startEvdevKeyMonitor();
+      if (!evdevStarted) {
+        console.error('[Shortcuts] evdev unavailable on Wayland, falling back to xinput (XWayland). ' +
+          'Hotkeys will only work when an XWayland window is focused. ' +
+          'To fix: sudo usermod -aG input $USER && reboot');
+        this._startXinputKeyMonitor();
+      }
+    } else {
+      // X11: xinput works perfectly
+      this._startXinputKeyMonitor();
+    }
   }
 
   stop() {
@@ -92,9 +139,139 @@ class ShortcutManager {
       this.xinputProcess.kill();
       this.xinputProcess = null;
     }
+    for (const proc of this.evdevProcesses) {
+      try { proc.kill(); } catch (e) { /* ignore */ }
+    }
+    this.evdevProcesses = [];
   }
 
-  _startX11KeyMonitor() {
+  // ============================================================
+  // Evdev monitor (Wayland — reads /dev/input/event* directly)
+  // ============================================================
+
+  _startEvdevKeyMonitor() {
+    const keyboards = this._findKeyboardDevices();
+    if (keyboards.length === 0) {
+      console.error('[Shortcuts] No keyboard devices found in /dev/input/');
+      return false;
+    }
+
+    let opened = 0;
+    for (const device of keyboards) {
+      if (this._openEvdevDevice(device)) opened++;
+    }
+
+    if (opened > 0) {
+      this._usingEvdev = true;
+      console.log(`[Shortcuts] evdev: monitoring ${opened} keyboard device(s) on Wayland`);
+      return true;
+    }
+    console.error('[Shortcuts] Failed to open any keyboard device');
+    return false;
+  }
+
+  _findKeyboardDevices() {
+    const devices = [];
+
+    // Method 1: /dev/input/by-path/*-kbd symlinks
+    try {
+      const byPath = '/dev/input/by-path/';
+      if (fs.existsSync(byPath)) {
+        const entries = fs.readdirSync(byPath);
+        for (const entry of entries) {
+          if (entry.includes('-kbd') && entry.includes('event')) {
+            try {
+              devices.push(fs.realpathSync(`${byPath}${entry}`));
+            } catch (e) { /* broken symlink */ }
+          }
+        }
+      }
+    } catch (e) { /* ignore */ }
+
+    if (devices.length > 0) return [...new Set(devices)];
+
+    // Method 2: parse /proc/bus/input/devices for keyboards
+    try {
+      const content = fs.readFileSync('/proc/bus/input/devices', 'utf8');
+      const sections = content.split('\n\n');
+      for (const section of sections) {
+        const evMatch = section.match(/B: EV=(\w+)/);
+        const keyMatch = section.match(/B: KEY=.*(e0000|10000)/);
+        if (evMatch && keyMatch) {
+          const handlerMatch = section.match(/H: Handlers=.*?(event\d+)/);
+          if (handlerMatch) {
+            devices.push(`/dev/input/${handlerMatch[1]}`);
+          }
+        }
+      }
+    } catch (e) { /* ignore */ }
+
+    return [...new Set(devices)];
+  }
+
+  _openEvdevDevice(devicePath) {
+    // Use spawn('cat') to read the raw binary stream from the device.
+    // fs.createReadStream doesn't always work reliably with character devices.
+    let proc;
+    try {
+      proc = spawn('cat', [devicePath], {
+        stdio: ['ignore', 'pipe', 'ignore']
+      });
+    } catch (err) {
+      return false;
+    }
+
+    let remainder = Buffer.alloc(0);
+
+    proc.stdout.on('data', (chunk) => {
+      const data = remainder.length > 0 ? Buffer.concat([remainder, chunk]) : chunk;
+      let offset = 0;
+
+      while (offset + INPUT_EVENT_SIZE <= data.length) {
+        // struct input_event: timeval(16) + type(2) + code(2) + value(4)
+        const type = data.readUInt16LE(offset + 16);
+        const code = data.readUInt16LE(offset + 18);
+        const value = data.readInt32LE(offset + 20);
+        offset += INPUT_EVENT_SIZE;
+
+        if (type === EV_KEY) {
+          const vkCode = EVDEV_TO_VK[code];
+          if (vkCode !== undefined) {
+            if (value === 1) {
+              this._sendKeyEvent('key_event_press', vkCode);
+            } else if (value === 0) {
+              this._sendKeyEvent('key_event_release', vkCode);
+            }
+          }
+        }
+      }
+
+      remainder = offset < data.length ? data.subarray(offset) : Buffer.alloc(0);
+    });
+
+    proc.on('error', () => {
+      this.evdevProcesses = this.evdevProcesses.filter(p => p !== proc);
+    });
+
+    proc.on('close', () => {
+      this.evdevProcesses = this.evdevProcesses.filter(p => p !== proc);
+      // Restart if still active and device reappeared
+      if (this.active && this._usingEvdev) {
+        setTimeout(() => {
+          if (this.active) this._openEvdevDevice(devicePath);
+        }, 2000);
+      }
+    });
+
+    this.evdevProcesses.push(proc);
+    return true;
+  }
+
+  // ============================================================
+  // Xinput monitor (X11 / XWayland fallback)
+  // ============================================================
+
+  _startXinputKeyMonitor() {
     try {
       this.xinputProcess = spawn('xinput', ['test-xi2', '--root'], {
         stdio: ['ignore', 'pipe', 'ignore']
@@ -116,22 +293,16 @@ class ShortcutManager {
       });
 
       this.xinputProcess.on('close', (code) => {
-        if (this.active) {
-          console.log(`xinput exited (${code}), restarting in 1s...`);
-          setTimeout(() => this._startX11KeyMonitor(), 1000);
+        if (this.active && !this._usingEvdev) {
+          setTimeout(() => this._startXinputKeyMonitor(), 1000);
         }
       });
     } catch (err) {
-      console.error(`Failed to start X11 key monitor: ${err.message}`);
+      console.error(`Failed to start xinput key monitor: ${err.message}`);
     }
   }
 
   _parseXinputLine(line) {
-    // xinput test-xi2 --root output is multiline:
-    //   EVENT type 13 (RawKeyPress)
-    //       detail: 38
-    //   EVENT type 14 (RawKeyRelease)
-    //       detail: 38
     if (line.includes('RawKeyPress')) {
       this._currentEventType = 'key_event_press';
     } else if (line.includes('RawKeyRelease')) {
@@ -148,6 +319,10 @@ class ShortcutManager {
       }
     }
   }
+
+  // ============================================================
+  // Common
+  // ============================================================
 
   _sendKeyEvent(eventType, vkCode) {
     if (!this.ipc) return;

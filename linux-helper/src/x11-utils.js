@@ -78,8 +78,10 @@ async function getActiveWindowInfoX11() {
       const name = (await execAsync(`xdotool getactivewindow getwindowname`)).stdout.trim();
       result.title = name;
 
-      const pid = (await execAsync(`xdotool getactivewindow getwindowpid`)).stdout.trim();
-      result.pid = parseInt(pid, 10) || 0;
+      try {
+        const pid = (await execAsync(`xdotool getactivewindow getwindowpid`)).stdout.trim();
+        result.pid = parseInt(pid, 10) || 0;
+      } catch { /* XWayland windows may not have PID */ }
     }
 
     if (tools.xprop && result.windowId) {
