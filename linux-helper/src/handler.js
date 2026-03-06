@@ -40,9 +40,12 @@ class Handler {
   /**
    * Handle incoming HelperAPI response from Electron (bidirectional)
    */
-  handleResponse(response, ipc) {
-    // Some responses from Electron to helper (e.g., TextBoxInfo)
-    console.log(`Received response from Electron: ${Object.keys(response).join(', ')}`);
+  handleResponse(response, _ipc) {
+    // Log only non-trivial responses (skip ACK noise)
+    const keys = Object.keys(response).filter(k => k !== 'uuid');
+    if (keys.length > 0 && !keys.every(k => k === 'ACK')) {
+      console.log(`Received response from Electron: ${keys.join(', ')}`);
+    }
   }
 
   async _dispatch(command, value, uuid, ipc) {
@@ -80,12 +83,13 @@ class Handler {
       // ========== Text Input & Paste ==========
       case 'PasteText': {
         const payload = value.payload || value;
-        const result = await x11.pasteText(payload.text, payload.htmlText);
-        // The PasteOutcome is sent by Electron after receiving the paste
-        // We need to send back an ACK and the outcome will be handled via PasteOutcome
+        // Send ACK immediately so Electron doesn't timeout
         ipc.sendACK(uuid);
 
-        // Also send PasteOutcome back
+        // Perform paste asynchronously
+        const result = await x11.pasteText(payload.text, payload.htmlText);
+
+        // Send PasteOutcome back to Electron
         ipc.sendRequest({
           uuid: this._uuid(),
           PasteOutcome: {
@@ -101,9 +105,10 @@ class Handler {
 
       case 'UpdateEditedText': {
         const payload = value.payload || value;
-        // Edit text = paste the edited version
-        const result = await x11.pasteText(payload.editedText);
+        // Send ACK immediately
         ipc.sendACK(uuid);
+        // Edit text = paste the edited version
+        await x11.pasteText(payload.editedText);
         break;
       }
 

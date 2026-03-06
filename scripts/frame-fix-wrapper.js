@@ -29,6 +29,11 @@ Module.prototype.require = function(id) {
 						const originalFrame = options.frame;
 						options.frame = true;
 						options.autoHideMenuBar = true;
+						// Hub window uses focusable:false for overlay mode on macOS/Windows.
+						// On Linux with native frame, this makes the window non-interactive.
+						if (options.focusable === false) {
+							options.focusable = true;
+						}
 						delete options.titleBarStyle;
 						delete options.titleBarOverlay;
 						console.log(`[Frame Fix] Window frame: ${originalFrame} -> true (size: ${options.width}x${options.height})`);

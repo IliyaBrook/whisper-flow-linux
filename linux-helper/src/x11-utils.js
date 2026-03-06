@@ -194,15 +194,15 @@ function findFocusedNode(node) {
 async function getClipboard() {
   try {
     if (displayServer === 'wayland' && tools.wlPaste) {
-      const { stdout } = await execAsync('wl-paste --no-newline 2>/dev/null || true');
+      const { stdout } = await execAsync('wl-paste --no-newline 2>/dev/null || true', { timeout: 2000 });
       return stdout;
     }
     if (tools.xclip) {
-      const { stdout } = await execAsync('xclip -selection clipboard -o 2>/dev/null || true');
+      const { stdout } = await execAsync('xclip -selection clipboard -o 2>/dev/null || true', { timeout: 2000 });
       return stdout;
     }
     if (tools.xsel) {
-      const { stdout } = await execAsync('xsel --clipboard --output 2>/dev/null || true');
+      const { stdout } = await execAsync('xsel --clipboard --output 2>/dev/null || true', { timeout: 2000 });
       return stdout;
     }
   } catch {
