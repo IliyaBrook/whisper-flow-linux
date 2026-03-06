@@ -39,6 +39,9 @@ build_electron_args() {
 	# AppImage always needs --no-sandbox (FUSE mount = no SUID)
 	[[ $package_type == 'appimage' ]] && electron_args+=('--no-sandbox')
 
+	# Disable Chromium custom titlebar for proper Linux window integration
+	electron_args+=('--disable-features=CustomTitlebar')
+
 	# X11 session - sandbox works if postinst set up chrome-sandbox correctly
 	if [[ $is_wayland != true ]]; then
 		log_message 'X11 session detected'

@@ -10,6 +10,7 @@ const path = require('path');
 
 const TMP_DIR = path.join(__dirname, '..', 'tmp');
 const APP_DIR = path.join(TMP_DIR, 'app');
+const ASAR_DIR = path.join(APP_DIR, 'asar-content');
 const BUILD_DIR = path.join(__dirname, '..', 'build');
 const DIST_DIR = path.join(__dirname, '..', 'dist');
 const LAUNCHER_SH = path.join(__dirname, 'launcher-common.sh');
@@ -32,6 +33,68 @@ function ensureAppImageTool() {
   return toolPath;
 }
 
+function assembleApp(metadata) {
+  console.log('Assembling application from patched sources...');
+
+  const electronDir = path.join(TMP_DIR, 'electron');
+  const appDir = path.join(BUILD_DIR, 'wispr-flow');
+
+  if (!fs.existsSync(electronDir) || !fs.existsSync(path.join(electronDir, 'electron'))) {
+    // Download Electron if not cached
+    const version = metadata.electronVersion;
+    const electronZip = path.join(TMP_DIR, `electron-v${version}-linux-x64.zip`);
+    if (!fs.existsSync(electronZip)) {
+      console.log(`  Downloading Electron v${version}...`);
+      const url = `https://github.com/electron/electron/releases/download/v${version}/electron-v${version}-linux-x64.zip`;
+      execSync(`curl -L -o "${electronZip}" "${url}" --progress-bar --max-time 300`, { stdio: 'inherit' });
+    }
+    if (fs.existsSync(electronDir)) fs.rmSync(electronDir, { recursive: true });
+    fs.mkdirSync(electronDir, { recursive: true });
+    execSync(`7z x "${electronZip}" -o"${electronDir}" -y`, { stdio: 'pipe' });
+  }
+
+  // Clean and recreate app dir
+  if (fs.existsSync(appDir)) {
+    fs.rmSync(appDir, { recursive: true });
+  }
+  fs.mkdirSync(appDir, { recursive: true });
+
+  // Copy Electron runtime
+  execSync(`cp -r "${electronDir}/"* "${appDir}/"`, { stdio: 'pipe' });
+
+  // Rename electron binary
+  const electronBin = path.join(appDir, 'electron');
+  const appBin = path.join(appDir, 'wispr-flow');
+  if (fs.existsSync(electronBin)) {
+    fs.renameSync(electronBin, appBin);
+  }
+
+  // Replace resources
+  const resourcesDir = path.join(appDir, 'resources');
+  if (fs.existsSync(resourcesDir)) {
+    fs.rmSync(resourcesDir, { recursive: true });
+  }
+  fs.mkdirSync(resourcesDir, { recursive: true });
+
+  // Pack app.asar from patched sources
+  console.log('  Packing app.asar from patched sources...');
+  execSync(`npx asar pack "${ASAR_DIR}" "${path.join(resourcesDir, 'app.asar')}"`, { stdio: 'pipe' });
+
+  // Copy non-asar resources (assets, migrations, linux-helper)
+  const srcResources = path.join(APP_DIR, 'resources');
+  if (fs.existsSync(srcResources)) {
+    for (const item of fs.readdirSync(srcResources)) {
+      const src = path.join(srcResources, item);
+      const dest = path.join(resourcesDir, item);
+      execSync(`cp -r "${src}" "${dest}"`, { stdio: 'pipe' });
+    }
+  }
+
+  execSync(`chmod +x "${appBin}"`, { stdio: 'pipe' });
+  console.log(`  App assembled at: ${appDir}`);
+  return appDir;
+}
+
 function buildAppImage(metadata) {
   console.log('Building AppImage...');
 
@@ -40,7 +103,7 @@ function buildAppImage(metadata) {
   const appDir = path.join(BUILD_DIR, 'wispr-flow');
 
   if (!fs.existsSync(appDir)) {
-    console.error('Application not assembled. Run package-deb first or assemble manually.');
+    console.error('Application not assembled. assembleApp() should have been called first.');
     process.exit(1);
   }
 
@@ -186,6 +249,10 @@ function main() {
 
   const metadata = getMetadata();
   console.log(`App version: ${metadata.appVersion}\n`);
+
+  // Always re-assemble from patched sources to ensure latest patches are included
+  assembleApp(metadata);
+  console.log('');
 
   const appImageFile = buildAppImage(metadata);
 

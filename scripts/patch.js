@@ -119,7 +119,11 @@ function patchMainBundle() {
     const argsCallStr = code.slice(argsStart, end); // (r,{stdio:[...],env:{...}})
     const optsStr = argsCallStr.slice(argsCallStr.indexOf(',') + 1, argsCallStr.lastIndexOf(')'));
 
-    const linuxSpawn = `(0,${spawnModule}.spawn)(process.execPath,[r],${optsStr})`;
+    // Add ELECTRON_RUN_AS_NODE=1 to env so Electron binary acts as Node.js
+    // Without this, spawning process.execPath launches a full Electron process
+    // which fails with sandbox SUID errors
+    const linuxOptsStr = optsStr.replace(/env:\{/, 'env:{ELECTRON_RUN_AS_NODE:"1",');
+    const linuxSpawn = `(0,${spawnModule}.spawn)(process.execPath,[r],${linuxOptsStr})`;
     const replacement = `helper.process="linux"===process.platform?${linuxSpawn}:${fullSpawnExpr}`;
 
     code = code.slice(0, spawnModuleMatch.index) + replacement + code.slice(end);
@@ -167,9 +171,21 @@ function patchMainBundle() {
     console.warn('  WARNING: Could not find Applications folder check');
   }
 
-  // ---- Patch 6: Auto-update ----
-  // Disable Squirrel auto-updater on Linux (it's Windows-only)
-  // We'll handle updates differently on Linux
+  // ---- Patch 6: macOS system permissions check ----
+  // getMediaAccessStatus is macOS-only. On Linux, skip and return "granted".
+  // Original: if(c.H8)return Promise.resolve(!0) — only skips on Windows.
+  // Add Linux guard so it also skips on Linux.
+  const mediaAccessPattern = /if\((\w+)\.H8\)return Promise\.resolve\(!0\);switch\((\w+)\)\{case (\w+)\.\$\.MICROPHONE:return Promise\.resolve\("granted"===(\w+)\.systemPreferences\.getMediaAccessStatus/;
+  const mediaAccessMatch = code.match(mediaAccessPattern);
+  if (mediaAccessMatch) {
+    const winVar = mediaAccessMatch[1];
+    const original = `if(${winVar}.H8)return Promise.resolve(!0)`;
+    const patched = `if(${winVar}.H8||"linux"===process.platform)return Promise.resolve(!0)`;
+    code = code.replace(original, patched);
+    console.log('  Patched media access check: skip on Linux (macOS-only API)');
+  } else {
+    console.warn('  WARNING: Could not find getMediaAccessStatus pattern');
+  }
 
   // ---- Patch 7: mac-ca module ----
   // Similar to win-ca, mac-ca loads macOS certificate store
@@ -231,10 +247,55 @@ function patchMainBundle() {
     console.log(`  Patched ${devToolsCount} devTools gates: enabled via WISPR_DEBUG=1`);
   }
 
+  // ---- Patch 12: Frame fix wrapper entry point ----
+  // Instead of fragile regex patches for frame:false, we use a wrapper that
+  // monkey-patches BrowserWindow at runtime (like figma-linux and claude-desktop).
+  // The wrapper is injected via a new entry point that loads before the main bundle.
+  // (See injectFrameFixWrapper() below)
+
+  // ---- Patch 13: Auto-open DevTools in debug mode ----
+  // When WISPR_DEBUG=1, open DevTools on the hub window after creation.
+  // Use unique hub-specific pattern to avoid matching scratchpad or other windows.
+  const hubCrashedPattern = 'r.webContents.on("render-process-gone",(e,t)=>{o().error("Hub window crashed:",t)})';
+  if (code.includes(hubCrashedPattern)) {
+    code = code.replace(
+      hubCrashedPattern,
+      '"1"===process.env.WISPR_DEBUG&&r.webContents.on("dom-ready",()=>{r.webContents.openDevTools({mode:"detach"})}),' + hubCrashedPattern
+    );
+    console.log('  Patched hub window: auto-open DevTools when WISPR_DEBUG=1');
+  } else {
+    console.warn('  WARNING: Could not find hub window crash pattern for DevTools injection');
+  }
+
   // ---- Write patched bundle ----
   fs.writeFileSync(MAIN_BUNDLE, code);
   const newSize = code.length;
   console.log(`  Bundle size: ${originalSize} → ${newSize} (${newSize > originalSize ? '+' : ''}${newSize - originalSize} bytes)`);
+}
+
+function injectFrameFixWrapper() {
+  console.log('Injecting frame-fix wrapper as entry point...');
+
+  const wrapperSrc = path.join(__dirname, 'frame-fix-wrapper.js');
+  const wrapperDest = path.join(ASAR_DIR, 'frame-fix-wrapper.js');
+  const entryDest = path.join(ASAR_DIR, 'frame-fix-entry.js');
+
+  // Copy wrapper module
+  fs.copyFileSync(wrapperSrc, wrapperDest);
+  console.log(`  Copied frame-fix-wrapper.js`);
+
+  // Create entry point that loads wrapper then original main
+  const entryCode = `require('./frame-fix-wrapper');\nrequire('./.webpack/main');\n`;
+  fs.writeFileSync(entryDest, entryCode);
+  console.log(`  Created frame-fix-entry.js`);
+
+  // Update package.json to use new entry point
+  const pkgPath = path.join(ASAR_DIR, 'package.json');
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+  const oldMain = pkg.main;
+  pkg.main = './frame-fix-entry';
+  fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
+  console.log(`  Updated package.json main: ${oldMain} → ${pkg.main}`);
 }
 
 function copyLinuxHelper() {
@@ -316,6 +377,8 @@ function main() {
   }
 
   patchMainBundle();
+  console.log('');
+  injectFrameFixWrapper();
   console.log('');
   copyLinuxHelper();
   console.log('');
