@@ -66,6 +66,7 @@ build_electron_args() {
 # Set common environment variables
 setup_electron_env() {
 	export ELECTRON_FORCE_IS_PACKAGED=true
+	export ELECTRON_USE_SYSTEM_TITLE_BAR=1
 }
 
 # Register .desktop file so the system knows how to handle wispr-flow:// URLs

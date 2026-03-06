@@ -52,7 +52,7 @@ run-debug:
 ifdef APPIMAGE
 	WISPR_DEBUG=1 ./$(APPIMAGE)
 else
-	WISPR_DEBUG=1 ELECTRON_ENABLE_LOGGING=1 /opt/wispr-flow/wispr-flow --no-sandbox --disable-features=CustomTitlebar --enable-logging
+	WISPR_DEBUG=1 ELECTRON_ENABLE_LOGGING=1 ELECTRON_USE_SYSTEM_TITLE_BAR=1 /opt/wispr-flow/wispr-flow --no-sandbox --disable-features=CustomTitlebar --enable-logging
 endif
 
 install:
