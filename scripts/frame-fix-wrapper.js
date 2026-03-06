@@ -94,10 +94,16 @@ Module.prototype.require = function(id) {
 
 					if (process.platform === 'linux') {
 						if (isOverlay) {
-							// No-op setIgnoreMouseEvents on Linux.
-							// {forward: true} is macOS-only; without it the overlay
-							// becomes fully click-through with no way to toggle back.
-							this.setIgnoreMouseEvents = (ignore, opts) => {};
+							// Fix setIgnoreMouseEvents on Linux.
+							// {forward: true} is macOS-only — on Linux it's silently ignored,
+							// making the whole overlay block mouse events (scroll, click).
+							// Fix: strip {forward: true} and pass through to the real method.
+							// Transparent areas become click-through; the app toggles
+							// setIgnoreMouseEvents(false) when showing interactive content.
+							const origSetIgnore = this.setIgnoreMouseEvents.bind(this);
+							this.setIgnoreMouseEvents = (ignore, opts) => {
+								origSetIgnore(ignore);
+							};
 						}
 
 						if (!isOverlay) {
