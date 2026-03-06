@@ -13,9 +13,7 @@ class Handler {
     this.ready = false;
     this.featureFlags = {};
     this.intervals = null;
-    this.shortcutManager = new ShortcutManager((type, keycode) => {
-      // Forward key events to Electron if needed
-    });
+    this.shortcutManager = new ShortcutManager();
   }
 
   /**
@@ -52,6 +50,9 @@ class Handler {
       // ========== Lifecycle ==========
       case 'IsReady':
         this.ready = true;
+        // Give the ShortcutManager access to IPC and start key monitoring
+        this.shortcutManager.setIPC(ipc);
+        this.shortcutManager.start();
         ipc.sendACK(uuid);
         // Also send readiness signal
         ipc.sendRequest({

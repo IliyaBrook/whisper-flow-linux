@@ -1,7 +1,7 @@
 DEB := $(wildcard dist/wispr-flow_*.deb)
 APPIMAGE := $(wildcard dist/Wispr_Flow-*-x86_64.AppImage)
 
-.PHONY: build build-deb build-appimage download extract patch rebuild-native \
+.PHONY: build build-deb build-appimage rebuild download extract patch rebuild-native \
         test run run-debug clean install uninstall
 
 build: build-deb
@@ -10,6 +10,15 @@ build-deb: download extract patch rebuild-native
 	yarn run package-deb
 
 build-appimage: download extract patch rebuild-native
+	yarn run package-appimage
+
+# Full rebuild after code changes (scripts/ or linux-helper/).
+# Re-extracts clean bundle, re-applies patches, repackages AppImage.
+# Skips download and rebuild-native (cached, rarely change).
+rebuild:
+	yarn run extract
+	yarn run patch
+	yarn run rebuild-native
 	yarn run package-appimage
 
 download:

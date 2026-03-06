@@ -219,6 +219,18 @@ function patchMainBundle() {
     console.warn('  WARNING: Could not find tray click pattern for Linux fix');
   }
 
+  // ---- Patch 11: Enable DevTools when WISPR_DEBUG=1 ----
+  // devTools is gated behind "development"===u.M0 (NODE_ENV check).
+  // Add env var check so run-debug can open DevTools.
+  const devToolsCount = (code.match(/devTools:"development"===/g) || []).length;
+  if (devToolsCount > 0) {
+    code = code.replace(
+      /devTools:"development"===/g,
+      'devTools:"1"===process.env.WISPR_DEBUG||"development"==='
+    );
+    console.log(`  Patched ${devToolsCount} devTools gates: enabled via WISPR_DEBUG=1`);
+  }
+
   // ---- Write patched bundle ----
   fs.writeFileSync(MAIN_BUNDLE, code);
   const newSize = code.length;

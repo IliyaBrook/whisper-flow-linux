@@ -29,6 +29,7 @@ jest.mock('../linux-helper/src/accessibility', () => ({
 
 jest.mock('../linux-helper/src/shortcuts', () => ({
   ShortcutManager: jest.fn().mockImplementation(() => ({
+    setIPC: jest.fn(),
     start: jest.fn(),
     stop: jest.fn(),
     updateShortcuts: jest.fn(),
