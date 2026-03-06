@@ -9,7 +9,7 @@ console.log('[Frame Fix] Wrapper loaded');
 // Detect overlay/popup windows that should stay frameless.
 // Wispr Flow window types (from debug logs):
 //   440x300  alwaysOnTop, transparent, skipTaskbar, type:"toolbar" → recording indicator
-//   1281x720 alwaysOnTop, transparent, skipTaskbar, type:"toolbar" → scratchpad/transcript
+//   1707x960 alwaysOnTop, transparent, skipTaskbar, type:"toolbar" → scratchpad/transcript
 //   1350x850 frame:false, focusable:false                         → hub/settings (MAIN)
 //   420x320  minWidth:300, alwaysOnTop, transparent, skipTaskbar   → quick entry popup
 //
@@ -22,8 +22,7 @@ function isOverlayWindow(options) {
 	return false;
 }
 
-// Build the patched BrowserWindow class and Menu interceptor once,
-// on first require('electron'), then reuse via Proxy on every access.
+// Build patched classes once, reuse via Proxy.
 let PatchedBrowserWindow = null;
 let patchedSetApplicationMenu = null;
 
@@ -31,7 +30,6 @@ Module.prototype.require = function(id) {
 	const result = originalRequire.apply(this, arguments);
 
 	if (id === 'electron' || id === 'electron/main') {
-		// Build patches once from the real electron module
 		if (!PatchedBrowserWindow) {
 			const OriginalBrowserWindow = result.BrowserWindow;
 			const OriginalMenu = result.Menu;
@@ -42,17 +40,14 @@ Module.prototype.require = function(id) {
 					let isOverlay = false;
 
 					if (process.platform === 'linux') {
-						// Log options for debugging
 						const debugOpts = {
 							width: options.width, height: options.height,
-							minWidth: options.minWidth, minHeight: options.minHeight,
-							frame: options.frame, transparent: options.transparent,
-							alwaysOnTop: options.alwaysOnTop, skipTaskbar: options.skipTaskbar,
-							focusable: options.focusable, titleBarStyle: options.titleBarStyle,
-							titleBarOverlay: options.titleBarOverlay, type: options.type,
-							resizable: options.resizable, show: options.show,
+							minWidth: options.minWidth, frame: options.frame,
+							transparent: options.transparent, alwaysOnTop: options.alwaysOnTop,
+							skipTaskbar: options.skipTaskbar, focusable: options.focusable,
+							type: options.type, resizable: options.resizable,
 						};
-						console.log('[Frame Fix] BrowserWindow options:', JSON.stringify(debugOpts));
+						console.log('[Frame Fix] BrowserWindow:', JSON.stringify(debugOpts));
 
 						isOverlay = isOverlayWindow(options);
 
@@ -67,13 +62,37 @@ Module.prototype.require = function(id) {
 							}
 							delete options.titleBarStyle;
 							delete options.titleBarOverlay;
-							// Remove type:"toolbar" override (if any) — it makes windows unmanaged by KWin
 							if (options.type) {
 								delete options.type;
 							}
-							console.log(`[Frame Fix] MAIN window: frame=${orig.frame}->true, transparent=${orig.transparent}->false, focusable=${orig.focusable}->${options.focusable} (${options.width}x${options.height})`);
+							// Fit window to screen (title bar adds ~30px)
+							try {
+								const { screen } = require('electron');
+								const display = screen.getPrimaryDisplay();
+								const workArea = display.workAreaSize;
+								if (options.height && options.height > workArea.height - 50) {
+									options.height = workArea.height - 50;
+								}
+								if (options.width && options.width > workArea.width - 20) {
+									options.width = workArea.width - 20;
+								}
+							} catch (e) { /* screen not ready */ }
+							console.log(`[Frame Fix] MAIN: frame=${orig.frame}->true, focusable=${orig.focusable}->true (${options.width}x${options.height})`);
 						} else {
-							console.log(`[Frame Fix] OVERLAY window kept as-is (${options.width}x${options.height}, type=${options.type}, alwaysOnTop=${options.alwaysOnTop})`);
+							// Overlay windows on Linux:
+							// 1. Remove type:"toolbar" — it binds the window to its parent,
+							//    making it only interactive when parent is focused.
+							// 2. Set focusable:true — on Linux, focusable:false makes the
+							//    window completely non-interactive (can't receive clicks).
+							//    On macOS/Windows, focusable:false only prevents focus steal
+							//    but still allows click interaction.
+							if (options.type === 'toolbar') {
+								delete options.type;
+							}
+							if (options.focusable === false) {
+								options.focusable = true;
+							}
+							console.log(`[Frame Fix] OVERLAY: ${options.width}x${options.height}, alwaysOnTop=${options.alwaysOnTop}`);
 						}
 					}
 
@@ -87,18 +106,29 @@ Module.prototype.require = function(id) {
 							});
 						}
 
+						if (isOverlay) {
+							// Fix setIgnoreMouseEvents on Linux.
+							// The app calls setIgnoreMouseEvents(true, {forward: true}) to make
+							// transparent areas click-through while forwarding mouse move events.
+							// On Linux, {forward: true} is NOT supported (macOS-only).
+							// This causes the overlay to be fully click-through with no way
+							// for the app to detect mouse enter and toggle it back.
+							// Fix: ignore setIgnoreMouseEvents calls entirely so the overlay
+							// stays interactive. The transparent areas naturally pass through
+							// clicks because the window is transparent.
+							this.setIgnoreMouseEvents = (ignore, opts) => {
+								// No-op on Linux — let transparency handle click-through
+							};
+						}
+
 						if (!isOverlay) {
-							// Hide menu bar after window creation
 							this.setMenuBarVisibility(false);
 
-							// Ensure menu bar stays hidden on show events
 							this.on('show', () => {
 								this.setMenuBarVisibility(false);
 							});
 
-							// Patch getContentBounds() to bypass Chromium's stale layout cache.
-							// Tiling WMs (KWin corner-snap, Sway) don't set _NET_WM_STATE atoms
-							// so the cache never invalidates. getSize() always reflects reality.
+							// Patch getContentBounds() for tiling WM compatibility
 							let frameW = 0;
 							let frameH = 0;
 							let calibrated = false;
@@ -116,7 +146,6 @@ Module.prototype.require = function(id) {
 								return origGetContentBounds();
 							};
 
-							// Re-emit resize on state transitions so layout updates
 							const reemitResize = () => {
 								if (this.isDestroyed()) return;
 								this.emit('resize');
@@ -130,7 +159,6 @@ Module.prototype.require = function(id) {
 							this.on('enter-full-screen', reemitResize);
 							this.on('leave-full-screen', reemitResize);
 
-							// One-time layout jiggle + frame overhead calibration
 							this.once('ready-to-show', () => {
 								this.setMenuBarVisibility(false);
 								const [w, h] = this.getSize();
@@ -154,7 +182,6 @@ Module.prototype.require = function(id) {
 								}, 50);
 							});
 
-							// KDE Plasma: clear flash-frame on focus
 							this.on('focus', () => {
 								this.flashFrame(false);
 							});
@@ -173,13 +200,11 @@ Module.prototype.require = function(id) {
 						if (descriptor) {
 							Object.defineProperty(PatchedBrowserWindow, key, descriptor);
 						}
-					} catch (e) {
-						// Ignore errors for non-configurable properties
-					}
+					} catch (e) { /* ignore non-configurable */ }
 				}
 			}
 
-			// Intercept Menu.setApplicationMenu to hide menu bar on Linux
+			// Intercept Menu.setApplicationMenu to hide menu bar
 			const originalSetAppMenu = OriginalMenu.setApplicationMenu.bind(OriginalMenu);
 			patchedSetApplicationMenu = function(menu) {
 				originalSetAppMenu(menu);
@@ -191,11 +216,9 @@ Module.prototype.require = function(id) {
 				}
 			};
 
-			console.log('[Frame Fix] Patches built successfully');
+			console.log('[Frame Fix] Patches built');
 		}
 
-		// Return a Proxy that intercepts property access on the electron module.
-		// Electron's exports use non-configurable getters, so Proxy is needed.
 		return new Proxy(result, {
 			get(target, prop, receiver) {
 				if (prop === 'BrowserWindow') return PatchedBrowserWindow;

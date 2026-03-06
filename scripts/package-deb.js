@@ -184,28 +184,31 @@ function buildDeb(appDir, metadata) {
     createDesktopFile()
   );
 
-  // Copy icon if available
-  const iconSources = [
-    path.join(APP_DIR, 'resources', 'assets', 'icons'),
-    path.join(APP_DIR, 'resources', 'assets', 'appLogos'),
-  ];
+  // Copy app icon — use the actual Wispr Flow logo
+  const logoPath = path.join(APP_DIR, 'resources', 'assets', 'logos', 'wispr-logo.png');
+  const iconDest = path.join(debDir, 'usr', 'share', 'icons', 'hicolor', '512x512', 'apps', 'wispr-flow.png');
 
-  for (const iconDir of iconSources) {
-    if (fs.existsSync(iconDir)) {
-      const pngs = fs.readdirSync(iconDir).filter(f => f.endsWith('.png'));
-      if (pngs.length > 0) {
-        // Use the largest icon
-        const icon = pngs.sort((a, b) => {
-          const sizeA = fs.statSync(path.join(iconDir, a)).size;
-          const sizeB = fs.statSync(path.join(iconDir, b)).size;
-          return sizeB - sizeA;
-        })[0];
-        fs.copyFileSync(
-          path.join(iconDir, icon),
-          path.join(debDir, 'usr', 'share', 'icons', 'hicolor', '512x512', 'apps', 'wispr-flow.png')
-        );
-        console.log(`  Icon: ${icon}`);
-        break;
+  if (fs.existsSync(logoPath)) {
+    fs.copyFileSync(logoPath, iconDest);
+    console.log(`  Icon: wispr-logo.png`);
+  } else {
+    // Fallback: search other locations
+    const iconSources = [
+      path.join(APP_DIR, 'resources', 'assets', 'icons'),
+    ];
+    for (const iconDir of iconSources) {
+      if (fs.existsSync(iconDir)) {
+        const pngs = fs.readdirSync(iconDir).filter(f => f.endsWith('.png'));
+        if (pngs.length > 0) {
+          const icon = pngs.sort((a, b) => {
+            const sizeA = fs.statSync(path.join(iconDir, a)).size;
+            const sizeB = fs.statSync(path.join(iconDir, b)).size;
+            return sizeB - sizeA;
+          })[0];
+          fs.copyFileSync(path.join(iconDir, icon), iconDest);
+          console.log(`  Icon: ${icon}`);
+          break;
+        }
       }
     }
   }

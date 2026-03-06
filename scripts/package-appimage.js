@@ -175,39 +175,30 @@ MimeType=x-scheme-handler/wispr-flow;
 `;
   fs.writeFileSync(path.join(appImageDir, 'wispr-flow.desktop'), desktop);
 
-  // Copy/create icon
+  // Copy app icon — use the actual Wispr Flow logo, not random app logos
   const iconDest = path.join(appImageDir, 'wispr-flow.png');
-  const iconSources = [
-    path.join(APP_DIR, 'resources', 'assets', 'icons'),
-    path.join(APP_DIR, 'resources', 'assets', 'appLogos'),
-  ];
+  const logoPath = path.join(APP_DIR, 'resources', 'assets', 'logos', 'wispr-logo.png');
 
-  let iconFound = false;
-  for (const iconDir of iconSources) {
-    if (fs.existsSync(iconDir)) {
-      const pngs = fs.readdirSync(iconDir).filter(f => f.endsWith('.png'));
-      if (pngs.length > 0) {
-        const icon = pngs.sort((a, b) => {
-          const sizeA = fs.statSync(path.join(iconDir, a)).size;
-          const sizeB = fs.statSync(path.join(iconDir, b)).size;
-          return sizeB - sizeA;
-        })[0];
-        fs.copyFileSync(path.join(iconDir, icon), iconDest);
-        iconFound = true;
-        break;
+  if (fs.existsSync(logoPath)) {
+    fs.copyFileSync(logoPath, iconDest);
+    console.log(`  Icon: ${logoPath}`);
+  } else {
+    // Fallback: extract 256x256 from setupIcon.ico if available
+    const icoPath = path.join(__dirname, '..', 'tmp', 'extracted', 'setupIcon.ico');
+    if (fs.existsSync(icoPath)) {
+      try {
+        const { execSync } = require('child_process');
+        execSync(`convert "${icoPath}[1]" "${iconDest}"`, { stdio: 'ignore' });
+        console.log(`  Icon: extracted from setupIcon.ico`);
+      } catch {
+        console.warn('  No icon found, using placeholder');
+        const minPng = Buffer.from(
+          '89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de0000000c4944415408d763f86f00000001010000050f1c450000000049454e44ae426082',
+          'hex'
+        );
+        fs.writeFileSync(iconDest, minPng);
       }
     }
-  }
-
-  if (!iconFound) {
-    // Create a minimal 1x1 PNG as placeholder
-    console.warn('  No icon found, using placeholder');
-    // Minimal PNG (1x1 blue pixel)
-    const minPng = Buffer.from(
-      '89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de0000000c4944415408d763f86f00000001010000050f1c450000000049454e44ae426082',
-      'hex'
-    );
-    fs.writeFileSync(iconDest, minPng);
   }
 
   // Build AppImage
