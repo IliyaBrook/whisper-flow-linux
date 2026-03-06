@@ -20,19 +20,9 @@ const { Handler } = require('./src/handler');
 
 function main() {
   console.log('Wispr Flow Linux Helper starting...');
-  console.log(`  PID: ${process.pid}`);
-  console.log(`  Node: ${process.version}`);
-  console.log(`  Platform: ${process.platform}`);
-  console.log(`  Display: ${process.env.DISPLAY || process.env.WAYLAND_DISPLAY || 'none'}`);
-  console.log(`  XDG_SESSION_TYPE: ${process.env.XDG_SESSION_TYPE || 'unset'}`);
 
   // Check for required tools
   const { tools, displayServer } = require('./src/x11-utils');
-  console.log(`  Display server: ${displayServer}`);
-  console.log(`  Available tools:`);
-  for (const [tool, available] of Object.entries(tools)) {
-    if (available) console.log(`    - ${tool}`);
-  }
 
   const missingCritical = [];
   if (displayServer === 'x11') {
@@ -43,13 +33,7 @@ function main() {
   }
 
   if (missingCritical.length > 0) {
-    console.error(`WARNING: Missing critical tools: ${missingCritical.join(', ')}`);
-    console.error('Some features may not work. Install them with:');
-    if (displayServer === 'x11') {
-      console.error('  sudo apt install xdotool xclip');
-    } else {
-      console.error('  sudo apt install wl-clipboard ydotool');
-    }
+    console.error(`Missing critical tools: ${missingCritical.join(', ')}`);
   }
 
   // Initialize handler and IPC

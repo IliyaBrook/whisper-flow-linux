@@ -4,15 +4,7 @@
 const Module = require('module');
 const originalRequire = Module.prototype.require;
 
-console.log('[Frame Fix] Wrapper loaded');
-
 // Detect overlay/popup windows that should stay frameless.
-// Wispr Flow window types (from debug logs):
-//   440x300  alwaysOnTop, transparent, skipTaskbar, type:"toolbar" → recording indicator
-//   1707x960 alwaysOnTop, transparent, skipTaskbar, type:"toolbar" → scratchpad/transcript
-//   1350x850 frame:false, focusable:false                         → hub/settings (MAIN)
-//   420x320  minWidth:300, alwaysOnTop, transparent, skipTaskbar   → quick entry popup
-//
 // Overlays have type:"toolbar" or alwaysOnTop+skipTaskbar.
 // The hub window is the only one WITHOUT these overlay properties.
 function isOverlayWindow(options) {
@@ -22,10 +14,8 @@ function isOverlayWindow(options) {
 	return false;
 }
 
-// CSS to fix sidebar scrolling on Linux — the sidebar has no overflow
-// set, so when the window is shorter than content, it clips.
+// CSS to fix sidebar scrolling on Linux
 const LINUX_SIDEBAR_CSS = `
-  /* Fix sidebar scroll when window height < content */
   .KsLRKbYTWPTkbHC7lssN > .cHx1jPbInzLdZs5bVsGu > .DYfDg1NbrLuoPJVIlR_w {
     overflow-y: auto !important;
   }
@@ -36,8 +26,6 @@ function getAppIconPath() {
 	try {
 		const path = require('path');
 		const fs = require('fs');
-		// In packaged app, process.resourcesPath = .../resources/
-		// The logo is at resources/assets/logos/wispr-logo.png
 		const p = path.join(process.resourcesPath || '', 'assets', 'logos', 'wispr-logo.png');
 		if (fs.existsSync(p)) return p;
 	} catch (e) { /* ignore */ }
@@ -62,20 +50,10 @@ Module.prototype.require = function(id) {
 					let isOverlay = false;
 
 					if (process.platform === 'linux') {
-						const debugOpts = {
-							width: options.width, height: options.height,
-							minWidth: options.minWidth, frame: options.frame,
-							transparent: options.transparent, alwaysOnTop: options.alwaysOnTop,
-							skipTaskbar: options.skipTaskbar, focusable: options.focusable,
-							type: options.type, resizable: options.resizable,
-						};
-						console.log('[Frame Fix] BrowserWindow:', JSON.stringify(debugOpts));
-
 						isOverlay = isOverlayWindow(options);
 
 						if (!isOverlay) {
 							// Main/settings window: force native managed frame
-							const orig = { frame: options.frame, transparent: options.transparent, focusable: options.focusable };
 							options.frame = true;
 							options.transparent = false;
 							options.autoHideMenuBar = true;
@@ -99,60 +77,39 @@ Module.prototype.require = function(id) {
 									options.width = workArea.width - 20;
 								}
 							} catch (e) { /* screen not ready */ }
-							console.log(`[Frame Fix] MAIN: frame=${orig.frame}->true, focusable=${orig.focusable}->true (${options.width}x${options.height})`);
 						} else {
 							// Overlay windows on Linux:
-							// 1. Remove type:"toolbar" — it binds the window to its parent,
-							//    making it only interactive when parent is focused.
-							// 2. Keep focusable:true so overlay buttons can be clicked.
+							// Remove type:"toolbar" — it binds the window to its parent.
+							// Keep focusable:true so overlay buttons can be clicked.
 							if (options.type === 'toolbar') {
 								delete options.type;
 							}
 							if (options.focusable === false) {
 								options.focusable = true;
 							}
-							console.log(`[Frame Fix] OVERLAY: ${options.width}x${options.height}, alwaysOnTop=${options.alwaysOnTop}`);
 						}
 					}
 
 					super(options);
 
 					if (process.platform === 'linux') {
-						// Open DevTools for ALL windows in debug mode
-						if (process.env.WISPR_DEBUG === '1') {
-							this.webContents.on('dom-ready', () => {
-								this.webContents.openDevTools({ mode: 'detach' });
-							});
-						}
-
 						if (isOverlay) {
-							// Fix setIgnoreMouseEvents on Linux.
-							// The app calls setIgnoreMouseEvents(true, {forward: true}) to make
-							// transparent areas click-through while forwarding mouse move events.
-							// On Linux, {forward: true} is NOT supported (macOS-only).
-							// This causes the overlay to be fully click-through with no way
-							// for the app to detect mouse enter and toggle it back.
-							// Fix: ignore setIgnoreMouseEvents calls entirely so the overlay
-							// stays interactive. The transparent areas naturally pass through
-							// clicks because the window is transparent.
-							this.setIgnoreMouseEvents = (ignore, opts) => {
-								// No-op on Linux — let transparency handle click-through
-							};
+							// No-op setIgnoreMouseEvents on Linux.
+							// {forward: true} is macOS-only; without it the overlay
+							// becomes fully click-through with no way to toggle back.
+							this.setIgnoreMouseEvents = (ignore, opts) => {};
 						}
 
 						if (!isOverlay) {
 							this.setMenuBarVisibility(false);
 
-							// Set window icon (fixes Safari icon in taskbar/Alt+Tab)
+							// Set window icon
 							const iconPath = getAppIconPath();
 							if (iconPath) {
 								try {
 									const { nativeImage } = require('electron');
 									this.setIcon(nativeImage.createFromPath(iconPath));
-									console.log('[Frame Fix] Window icon set:', iconPath);
-								} catch (e) {
-									console.log('[Frame Fix] Could not set icon:', e.message);
-								}
+								} catch (e) { /* ignore */ }
 							}
 
 							// Inject CSS to fix sidebar scrolling
@@ -221,8 +178,6 @@ Module.prototype.require = function(id) {
 							this.on('focus', () => {
 								this.flashFrame(false);
 							});
-
-							console.log('[Frame Fix] Main window patches applied');
 						}
 					}
 				}
@@ -251,8 +206,6 @@ Module.prototype.require = function(id) {
 					}
 				}
 			};
-
-			console.log('[Frame Fix] Patches built');
 		}
 
 		return new Proxy(result, {

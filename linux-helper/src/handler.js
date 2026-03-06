@@ -41,11 +41,7 @@ class Handler {
    * Handle incoming HelperAPI response from Electron (bidirectional)
    */
   handleResponse(response, _ipc) {
-    // Log only non-trivial responses (skip ACK noise)
-    const keys = Object.keys(response).filter(k => k !== 'uuid');
-    if (keys.length > 0 && !keys.every(k => k === 'ACK')) {
-      console.log(`Received response from Electron: ${keys.join(', ')}`);
-    }
+    // Responses from Electron (bidirectional) — no action needed
   }
 
   async _dispatch(command, value, uuid, ipc) {
@@ -157,7 +153,6 @@ class Handler {
       }
 
       case 'StoreFocusedAppAndElement':
-        console.log('[Handler] StoreFocusedAppAndElement: storing focused window');
         await x11.storeFocusedWindow();
         ipc.sendACK(uuid);
         break;
@@ -233,7 +228,6 @@ class Handler {
       case 'DictationStart':
         // Store the currently focused window so we can restore focus before pasting
         await x11.storeFocusedWindow();
-        console.log('[Handler] DictationStart: stored focused window');
         ipc.sendACK(uuid);
         break;
 
