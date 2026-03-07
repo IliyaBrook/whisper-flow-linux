@@ -51,6 +51,9 @@ Module.prototype.require = function(id) {
 
 					if (process.platform === 'linux') {
 						isOverlay = isOverlayWindow(options);
+						if (process.env.WISPR_DEBUG === '1') {
+							console.log(`[BrowserWindow] ${isOverlay ? 'OVERLAY' : 'MAIN'} w=${options.width} h=${options.height} type=${options.type} alwaysOnTop=${options.alwaysOnTop} transparent=${options.transparent} focusable=${options.focusable} skipTaskbar=${options.skipTaskbar} show=${options.show}`);
+						}
 
 						if (!isOverlay) {
 							// Main/settings window: force native managed frame
@@ -93,6 +96,13 @@ Module.prototype.require = function(id) {
 					super(options);
 
 					if (process.platform === 'linux') {
+						// Open DevTools for ALL windows in debug mode
+						if (process.env.WISPR_DEBUG === '1') {
+							this.webContents.on('dom-ready', () => {
+								this.webContents.openDevTools({ mode: 'detach' });
+							});
+						}
+
 						if (isOverlay) {
 							// Fix setIgnoreMouseEvents on Linux.
 							// {forward: true} is macOS-only — on Linux it's silently ignored,
