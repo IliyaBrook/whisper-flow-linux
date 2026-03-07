@@ -102,6 +102,8 @@ class ShortcutManager {
     this.ipc = null;
     this._currentEventType = null;
     this._usingEvdev = false;
+    this._pressedKeys = new Set(); // Track pressed keys to deduplicate across multiple evdev devices
+    this._lastRepeatTime = new Map(); // vkCode → timestamp, throttle repeat events across devices
   }
 
   setIPC(ipc) {
@@ -143,6 +145,8 @@ class ShortcutManager {
       try { proc.kill(); } catch (e) { /* ignore */ }
     }
     this.evdevProcesses = [];
+    this._pressedKeys.clear();
+    this._lastRepeatTime.clear();
   }
 
   // ============================================================
@@ -237,10 +241,26 @@ class ShortcutManager {
         if (type === EV_KEY) {
           const vkCode = EVDEV_TO_VK[code];
           if (vkCode !== undefined) {
-            if (value === 1) {
-              this._sendKeyEvent('key_event_press', vkCode);
-            } else if (value === 0) {
-              this._sendKeyEvent('key_event_release', vkCode);
+            if (value === 1) { // press
+              if (!this._pressedKeys.has(vkCode)) {
+                this._pressedKeys.add(vkCode);
+                this._lastRepeatTime.set(vkCode, Date.now());
+                this._sendKeyEvent('key_event_press', vkCode);
+              }
+            } else if (value === 2) { // repeat — forward as press to match Windows WM_KEYDOWN behavior
+              if (this._pressedKeys.has(vkCode)) {
+                const now = Date.now();
+                if (now - (this._lastRepeatTime.get(vkCode) || 0) >= 30) {
+                  this._lastRepeatTime.set(vkCode, now);
+                  this._sendKeyEvent('key_event_press', vkCode);
+                }
+              }
+            } else if (value === 0) { // release
+              if (this._pressedKeys.has(vkCode)) {
+                this._pressedKeys.delete(vkCode);
+                this._lastRepeatTime.delete(vkCode);
+                this._sendKeyEvent('key_event_release', vkCode);
+              }
             }
           }
         }
