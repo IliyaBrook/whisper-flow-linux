@@ -13,6 +13,13 @@
 
 const { spawn } = require('child_process');
 const fs = require('fs');
+const path = require('path');
+
+// Debug log to file (stderr is piped to Electron and not shown in terminal)
+const DEBUG_LOG = path.join(require('os').tmpdir(), 'wispr-shortcuts-debug.log');
+function dbg(msg) {
+  try { fs.appendFileSync(DEBUG_LOG, `${new Date().toISOString()} ${msg}\n`); } catch(e) {}
+}
 
 // For keyboard monitoring, detect the REAL session type (not the
 // WISPR_DISPLAY_BACKEND override which is only for clipboard/window tools).
@@ -115,6 +122,7 @@ class ShortcutManager {
   }
 
   start() {
+    dbg(`start() called, active=${this.active}, session=${sessionType}`);
     if (this.active) return;
     this.active = true;
 
@@ -140,8 +148,8 @@ class ShortcutManager {
       this.xinputProcess.kill();
       this.xinputProcess = null;
     }
-    for (const stream of this.evdevStreams) {
-      try { stream.destroy(); } catch (e) { /* ignore */ }
+    for (const sock of this.evdevStreams) {
+      try { sock.destroy(); } catch (e) { /* ignore */ }
     }
     this.evdevStreams = [];
     this._pressedKeys.clear();
@@ -212,26 +220,26 @@ class ShortcutManager {
   }
 
   _openEvdevDevice(devicePath) {
-    // Read evdev device directly via fs — no child process needed.
-    // Using spawn('cat') caused buffering issues: cat uses full buffering
-    // when writing to a pipe (~4KB), so quick key press+release (~72 bytes)
-    // would get stuck in the buffer until more events filled it up.
+    // Use net.Socket to read evdev devices via the event loop directly.
+    // fs.createReadStream uses libuv's thread pool for reads, and with
+    // multiple blocking evdev devices, it exhausts the pool (default 4 threads),
+    // causing all reads to stall. net.Socket uses epoll/poll on the event loop,
+    // which works because evdev devices support poll().
+    const net = require('net');
     let fd;
     try {
-      fd = fs.openSync(devicePath, 'r');
+      fd = fs.openSync(devicePath, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+      dbg(`opened ${devicePath} fd=${fd} (nonblock+socket)`);
     } catch (err) {
+      dbg(`FAILED to open ${devicePath}: ${err.message}`);
       return false;
     }
 
-    const stream = fs.createReadStream(null, {
-      fd,
-      highWaterMark: INPUT_EVENT_SIZE * 4,
-      autoClose: true
-    });
-
+    const socket = new net.Socket({ fd, readable: true, writable: false });
     let remainder = Buffer.alloc(0);
 
-    stream.on('data', (chunk) => {
+    socket.on('data', (chunk) => {
+      dbg(`evdev data from ${devicePath}: ${chunk.length} bytes`);
       const data = remainder.length > 0 ? Buffer.concat([remainder, chunk]) : chunk;
       let offset = 0;
 
@@ -244,6 +252,7 @@ class ShortcutManager {
 
         if (type === EV_KEY) {
           const vkCode = EVDEV_TO_VK[code];
+          dbg(`EV_KEY code=${code} value=${value} vkCode=${vkCode} ipc=${!!this.ipc}`);
           if (vkCode !== undefined) {
             if (value === 1) { // press
               if (!this._pressedKeys.has(vkCode)) {
@@ -251,10 +260,6 @@ class ShortcutManager {
                 this._sendKeyEvent('key_event_press', vkCode);
               }
             } else if (value === 2) { // repeat (key held down) — ignore
-              // Do NOT forward repeats as press events.
-              // Push-to-talk needs clean press/release pairs.
-              // Forwarding repeats floods Electron with spurious presses
-              // and can break shortcut state machines.
             } else if (value === 0) { // release
               if (this._pressedKeys.has(vkCode)) {
                 this._pressedKeys.delete(vkCode);
@@ -268,13 +273,14 @@ class ShortcutManager {
       remainder = offset < data.length ? data.subarray(offset) : Buffer.alloc(0);
     });
 
-    stream.on('error', () => {
-      this.evdevStreams = this.evdevStreams.filter(s => s !== stream);
+    socket.on('error', (err) => {
+      dbg(`evdev error ${devicePath}: ${err.message}`);
+      this.evdevStreams = this.evdevStreams.filter(s => s !== socket);
     });
 
-    stream.on('close', () => {
-      this.evdevStreams = this.evdevStreams.filter(s => s !== stream);
-      // Restart if still active and device reappeared
+    socket.on('close', () => {
+      dbg(`evdev closed ${devicePath}`);
+      this.evdevStreams = this.evdevStreams.filter(s => s !== socket);
       if (this.active && this._usingEvdev) {
         setTimeout(() => {
           if (this.active) this._openEvdevDevice(devicePath);
@@ -282,7 +288,7 @@ class ShortcutManager {
       }
     });
 
-    this.evdevStreams.push(stream);
+    this.evdevStreams.push(socket);
     return true;
   }
 
@@ -344,7 +350,11 @@ class ShortcutManager {
   // ============================================================
 
   _sendKeyEvent(eventType, vkCode) {
-    if (!this.ipc) return;
+    if (!this.ipc) {
+      dbg(`_sendKeyEvent: NO IPC! event=${eventType} vk=${vkCode}`);
+      return;
+    }
+    dbg(`SENDING ${eventType} vk=${vkCode}`);
 
     this.eventIndex++;
     this.ipc.sendRequest({
