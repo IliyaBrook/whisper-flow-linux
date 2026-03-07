@@ -205,12 +205,9 @@ class Handler {
       }
 
       case 'SetFocusChangeDetectorState': {
-        const payload = value.payload || value;
-        if (payload.active) {
-          this.shortcutManager.start();
-        } else {
-          this.shortcutManager.stop();
-        }
+        // Focus change detection is separate from keyboard shortcut monitoring.
+        // Do NOT stop the shortcut manager here — it must keep running to
+        // capture key release events (e.g., for push-to-talk).
         ipc.sendACK(uuid);
         break;
       }

@@ -96,14 +96,13 @@ const EV_KEY = 1;
 class ShortcutManager {
   constructor() {
     this.xinputProcess = null;
-    this.evdevProcesses = [];
+    this.evdevStreams = [];
     this.active = false;
     this.eventIndex = 0;
     this.ipc = null;
     this._currentEventType = null;
     this._usingEvdev = false;
     this._pressedKeys = new Set(); // Track pressed keys to deduplicate across multiple evdev devices
-    this._lastRepeatTime = new Map(); // vkCode → timestamp, throttle repeat events across devices
   }
 
   setIPC(ipc) {
@@ -141,12 +140,11 @@ class ShortcutManager {
       this.xinputProcess.kill();
       this.xinputProcess = null;
     }
-    for (const proc of this.evdevProcesses) {
-      try { proc.kill(); } catch (e) { /* ignore */ }
+    for (const stream of this.evdevStreams) {
+      try { stream.destroy(); } catch (e) { /* ignore */ }
     }
-    this.evdevProcesses = [];
+    this.evdevStreams = [];
     this._pressedKeys.clear();
-    this._lastRepeatTime.clear();
   }
 
   // ============================================================
@@ -214,20 +212,26 @@ class ShortcutManager {
   }
 
   _openEvdevDevice(devicePath) {
-    // Use spawn('cat') to read the raw binary stream from the device.
-    // fs.createReadStream doesn't always work reliably with character devices.
-    let proc;
+    // Read evdev device directly via fs — no child process needed.
+    // Using spawn('cat') caused buffering issues: cat uses full buffering
+    // when writing to a pipe (~4KB), so quick key press+release (~72 bytes)
+    // would get stuck in the buffer until more events filled it up.
+    let fd;
     try {
-      proc = spawn('cat', [devicePath], {
-        stdio: ['ignore', 'pipe', 'ignore']
-      });
+      fd = fs.openSync(devicePath, 'r');
     } catch (err) {
       return false;
     }
 
+    const stream = fs.createReadStream(null, {
+      fd,
+      highWaterMark: INPUT_EVENT_SIZE * 4,
+      autoClose: true
+    });
+
     let remainder = Buffer.alloc(0);
 
-    proc.stdout.on('data', (chunk) => {
+    stream.on('data', (chunk) => {
       const data = remainder.length > 0 ? Buffer.concat([remainder, chunk]) : chunk;
       let offset = 0;
 
@@ -244,21 +248,16 @@ class ShortcutManager {
             if (value === 1) { // press
               if (!this._pressedKeys.has(vkCode)) {
                 this._pressedKeys.add(vkCode);
-                this._lastRepeatTime.set(vkCode, Date.now());
                 this._sendKeyEvent('key_event_press', vkCode);
               }
-            } else if (value === 2) { // repeat — forward as press to match Windows WM_KEYDOWN behavior
-              if (this._pressedKeys.has(vkCode)) {
-                const now = Date.now();
-                if (now - (this._lastRepeatTime.get(vkCode) || 0) >= 30) {
-                  this._lastRepeatTime.set(vkCode, now);
-                  this._sendKeyEvent('key_event_press', vkCode);
-                }
-              }
+            } else if (value === 2) { // repeat (key held down) — ignore
+              // Do NOT forward repeats as press events.
+              // Push-to-talk needs clean press/release pairs.
+              // Forwarding repeats floods Electron with spurious presses
+              // and can break shortcut state machines.
             } else if (value === 0) { // release
               if (this._pressedKeys.has(vkCode)) {
                 this._pressedKeys.delete(vkCode);
-                this._lastRepeatTime.delete(vkCode);
                 this._sendKeyEvent('key_event_release', vkCode);
               }
             }
@@ -269,12 +268,12 @@ class ShortcutManager {
       remainder = offset < data.length ? data.subarray(offset) : Buffer.alloc(0);
     });
 
-    proc.on('error', () => {
-      this.evdevProcesses = this.evdevProcesses.filter(p => p !== proc);
+    stream.on('error', () => {
+      this.evdevStreams = this.evdevStreams.filter(s => s !== stream);
     });
 
-    proc.on('close', () => {
-      this.evdevProcesses = this.evdevProcesses.filter(p => p !== proc);
+    stream.on('close', () => {
+      this.evdevStreams = this.evdevStreams.filter(s => s !== stream);
       // Restart if still active and device reappeared
       if (this.active && this._usingEvdev) {
         setTimeout(() => {
@@ -283,7 +282,7 @@ class ShortcutManager {
       }
     });
 
-    this.evdevProcesses.push(proc);
+    this.evdevStreams.push(stream);
     return true;
   }
 
