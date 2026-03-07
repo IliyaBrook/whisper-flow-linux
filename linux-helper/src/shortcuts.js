@@ -226,7 +226,7 @@ class ShortcutManager {
     // unbuffered output avoids this entirely.
     let proc;
     try {
-      proc = spawn('dd', [`if=${devicePath}`, 'bs=72', 'iflag=fullblock'], {
+      proc = spawn('stdbuf', ['-o0', 'cat', devicePath], {
         stdio: ['ignore', 'pipe', 'ignore']
       });
       dbg(`spawned dd for ${devicePath} pid=${proc.pid}`);
