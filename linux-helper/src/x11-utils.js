@@ -26,6 +26,18 @@ function getDisplayServer() {
 
 const displayServer = getDisplayServer();
 
+// Real session type (ignoring WISPR_DISPLAY_BACKEND override).
+// Used for key simulation: xdotool only works for XWayland windows,
+// on real Wayland we need uinput/ydotool.
+function isRealWayland() {
+  const xdg = process.env.XDG_SESSION_TYPE || '';
+  return xdg === 'wayland' || !!process.env.WAYLAND_DISPLAY;
+}
+
+// Path to the uinput Ctrl+V script
+const path = require('path');
+const UINPUT_SCRIPT = path.join(__dirname, 'uinput-ctrl-v.py');
+
 /**
  * Check if a command exists
  */
@@ -266,9 +278,11 @@ async function pasteText(text, htmlText) {
     await sleep(80);
 
     // Simulate Ctrl+V on the currently focused window
-    // (handler already focused the stored window before calling us)
-    // Note: do NOT use --window flag — it uses XSendEvent which apps can ignore
-    if (displayServer === 'x11' && tools.xdotool) {
+    // On real Wayland: use uinput (kernel-level, works for all windows)
+    // On X11: use xdotool (works for all X11 windows)
+    if (isRealWayland()) {
+      await execAsync(`python3 "${UINPUT_SCRIPT}"`, { timeout: 3000 });
+    } else if (displayServer === 'x11' && tools.xdotool) {
       await execAsync('xdotool key --clearmodifiers ctrl+v', { timeout: 2000 });
     } else {
       await simulateKeyCombo(['ctrl', 'v']);
@@ -394,6 +408,9 @@ async function storeFocusedWindow() {
  */
 async function focusStoredWindow() {
   if (!storedWindowId) return;
+  // On real Wayland, apps can't steal focus — the compositor manages it.
+  // The original window should still be focused, so skip xdotool.
+  if (isRealWayland()) return;
   try {
     if (displayServer === 'x11' && tools.xdotool) {
       await execAsync(`xdotool windowactivate --sync ${storedWindowId}`, { timeout: 1000 });
