@@ -104,16 +104,101 @@ Module.prototype.require = function(id) {
 						}
 
 						if (isOverlay) {
-							// Fix setIgnoreMouseEvents on Linux.
+							// Linux: emulate {forward: true} for setIgnoreMouseEvents.
 							// {forward: true} is macOS-only — on Linux it's silently ignored,
-							// making the whole overlay block mouse events (scroll, click).
-							// Fix: strip {forward: true} and pass through to the real method.
-							// Transparent areas become click-through; the app toggles
-							// setIgnoreMouseEvents(false) when showing interactive content.
+							// so the overlay either blocks everything (if we no-op) or is
+							// never interactive (if we strip forward).
+							//
+							// Fix: poll cursor position via xdotool (Electron's
+							// getCursorScreenPoint returns stale values when cursor isn't
+							// over an Electron window). When cursor is over non-transparent
+							// overlay content (checked via capturePage alpha), make the
+							// window interactive. The renderer's existing mouseenter/
+							// mouseleave logic then handles toggling back.
+							const { screen: screenModule } = require('electron');
+							const { execFile } = require('child_process');
 							const origSetIgnore = this.setIgnoreMouseEvents.bind(this);
-							this.setIgnoreMouseEvents = (ignore, opts) => {
+							let ignoring = false;
+							let polling = false;
+							const debug = process.env.WISPR_DEBUG === '1';
+							const win = this;
+
+							this.setIgnoreMouseEvents = (ignore, _opts) => {
 								origSetIgnore(ignore);
+								ignoring = ignore;
+								if (ignore) startPolling();
 							};
+
+							// xdotool works reliably on X11 even when no Electron
+							// window is under the cursor. Falls back to Electron API.
+							const getMousePos = () => new Promise((resolve) => {
+								execFile('xdotool', ['getmouselocation', '--shell'],
+									{ timeout: 500 },
+									(err, stdout) => {
+										if (!err && stdout) {
+											const mx = parseInt((stdout.match(/X=(\d+)/) || [])[1]);
+											const my = parseInt((stdout.match(/Y=(\d+)/) || [])[1]);
+											if (!isNaN(mx) && !isNaN(my)) {
+												return resolve({ x: mx, y: my });
+											}
+										}
+										resolve(screenModule.getCursorScreenPoint());
+									}
+								);
+							});
+
+							async function pollTick() {
+								if (win.isDestroyed()) { polling = false; return; }
+								try {
+									if (win.isVisible()) {
+										let cursor;
+										if (ignoring) {
+											cursor = await getMousePos();
+										} else {
+											cursor = screenModule.getCursorScreenPoint();
+										}
+
+										const b = win.getBounds();
+										const inside = cursor.x >= b.x && cursor.x < b.x + b.width &&
+										               cursor.y >= b.y && cursor.y < b.y + b.height;
+
+										if (ignoring && inside) {
+											const relX = Math.max(0, Math.min(cursor.x - b.x, b.width - 1));
+											const relY = Math.max(0, Math.min(cursor.y - b.y, b.height - 1));
+											const img = await win.webContents.capturePage({
+												x: relX, y: relY, width: 1, height: 1
+											});
+											if (!win.isDestroyed() && ignoring) {
+												const bmp = img.toBitmap();
+												if (bmp.length >= 4 && bmp[3] > 10) {
+													if (debug) console.log(`[Overlay] hit (${relX},${relY}) a=${bmp[3]} — interactive`);
+													origSetIgnore(false);
+													ignoring = false;
+												}
+											}
+										} else if (!ignoring && !inside) {
+											if (debug) console.log('[Overlay] cursor left bounds — click-through');
+											origSetIgnore(true);
+											ignoring = true;
+										}
+									}
+								} catch (e) {
+									if (debug) console.log('[Overlay] poll:', e.message);
+								}
+								if (!win.isDestroyed() && polling) {
+									setTimeout(pollTick, ignoring ? 100 : 50);
+								} else {
+									polling = false;
+								}
+							}
+
+							function startPolling() {
+								if (polling) return;
+								polling = true;
+								setTimeout(pollTick, 50);
+							}
+
+							win.on('closed', () => { polling = false; });
 						}
 
 						if (!isOverlay) {
