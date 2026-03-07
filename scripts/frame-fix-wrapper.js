@@ -534,6 +534,56 @@ Module.prototype.require = function(id) {
 					return origSetCtxMenu.call(this, menu);
 				};
 			}
+
+			// --- Linux autostart (Launch at Login) ---
+			if (process.platform === 'linux') {
+				const _fs = require('fs');
+				const _path = require('path');
+				const _os = require('os');
+
+				const autostartPath = _path.join(
+					process.env.XDG_CONFIG_HOME || _path.join(_os.homedir(), '.config'),
+					'autostart', 'wispr-flow.desktop'
+				);
+
+				const getExecPath = () => process.env.APPIMAGE || process.execPath;
+
+				result.app.setLoginItemSettings = (settings) => {
+					try {
+						if (settings.openAtLogin) {
+							const content = [
+								'[Desktop Entry]',
+								'Type=Application',
+								'Name=Wispr Flow',
+								'Comment=Voice-typing made perfect',
+								`Exec="${getExecPath()}" --opened-at-login`,
+								'Terminal=false',
+								'X-GNOME-Autostart-enabled=true',
+								'StartupNotify=false',
+								''
+							].join('\n');
+							_fs.mkdirSync(_path.dirname(autostartPath), { recursive: true });
+							_fs.writeFileSync(autostartPath, content);
+						} else {
+							_fs.unlinkSync(autostartPath);
+						}
+					} catch (e) { /* ignore */ }
+				};
+
+				result.app.getLoginItemSettings = () => ({
+					openAtLogin: _fs.existsSync(autostartPath),
+					wasOpenedAtLogin: process.argv.includes('--opened-at-login')
+				});
+
+				// Update autostart entry path on each launch (handles moved AppImage)
+				result.app.whenReady().then(() => {
+					try {
+						if (_fs.existsSync(autostartPath)) {
+							result.app.setLoginItemSettings({ openAtLogin: true });
+						}
+					} catch (e) { /* ignore */ }
+				});
+			}
 		}
 
 		return new Proxy(result, {
