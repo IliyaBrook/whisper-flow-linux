@@ -44,6 +44,125 @@ Module.prototype.require = function(id) {
 			const OriginalBrowserWindow = result.BrowserWindow;
 			const OriginalMenu = result.Menu;
 
+			// --- Overlay position offset (shared state) ---
+			let overlayOffsetX = 0;
+			let overlayOffsetY = 0;
+			let overlayConfigPath = null;
+			const activeOverlays = [];
+			let positionWindow = null;
+
+			function loadOverlayConfig() {
+				if (overlayConfigPath !== null) return;
+				try {
+					const path = require('path');
+					const fs = require('fs');
+					overlayConfigPath = path.join(
+						result.app.getPath('userData'),
+						'linux-overlay-position.json'
+					);
+					const data = JSON.parse(fs.readFileSync(overlayConfigPath, 'utf8'));
+					if (typeof data.offsetX === 'number') overlayOffsetX = data.offsetX;
+					if (typeof data.offsetY === 'number') overlayOffsetY = data.offsetY;
+				} catch {
+					if (!overlayConfigPath) {
+						try {
+							overlayConfigPath = require('path').join(
+								result.app.getPath('userData'),
+								'linux-overlay-position.json'
+							);
+						} catch { /* ignore */ }
+					}
+				}
+			}
+
+			function saveOverlayConfig() {
+				if (!overlayConfigPath) return;
+				try {
+					const fs = require('fs');
+					const path = require('path');
+					fs.mkdirSync(path.dirname(overlayConfigPath), { recursive: true });
+					fs.writeFileSync(
+						overlayConfigPath,
+						JSON.stringify({ offsetX: overlayOffsetX, offsetY: overlayOffsetY }),
+						'utf8'
+					);
+				} catch { /* ignore */ }
+			}
+
+			function moveAllOverlays(dx, dy) {
+				overlayOffsetX += dx;
+				overlayOffsetY += dy;
+				saveOverlayConfig();
+				for (const o of activeOverlays) o.applyOffset();
+			}
+
+			function openOverlayPositionWindow() {
+				if (positionWindow && !positionWindow.isDestroyed()) {
+					positionWindow.focus();
+					return;
+				}
+				positionWindow = new OriginalBrowserWindow({
+					width: 250, height: 230,
+					resizable: false, minimizable: false, maximizable: false,
+					alwaysOnTop: true, title: 'Overlay Position',
+					autoHideMenuBar: true,
+					webPreferences: { sandbox: true }
+				});
+				positionWindow.setMenuBarVisibility(false);
+				positionWindow.loadURL('about:blank');
+
+				const updateDisplay = () => {
+					if (positionWindow && !positionWindow.isDestroyed()) {
+						positionWindow.webContents.executeJavaScript(
+							`u(${overlayOffsetX},${overlayOffsetY})`
+						).catch(() => {});
+					}
+				};
+
+				positionWindow.webContents.on('did-finish-load', () => {
+					positionWindow.webContents.executeJavaScript(`
+						document.documentElement.innerHTML = '<head><style>' +
+						'*{margin:0;padding:0;box-sizing:border-box}' +
+						'body{font-family:system-ui,sans-serif;display:flex;flex-direction:column;' +
+						'align-items:center;justify-content:center;height:100vh;background:#1e1e1e;color:#ddd;user-select:none}' +
+						'.info{font-size:13px;color:#aaa;margin-bottom:12px}.info b{color:#fff}' +
+						'.grid{display:grid;grid-template-columns:repeat(3,48px);grid-template-rows:repeat(3,40px);gap:4px}' +
+						'button{border:1px solid #444;background:#333;color:#eee;border-radius:5px;cursor:pointer;' +
+						'font-size:18px;display:flex;align-items:center;justify-content:center}' +
+						'button:hover{background:#444}button:active{background:#555}' +
+						'.e{border:none;background:none;cursor:default}' +
+						'.rst{margin-top:14px;padding:6px 24px;font-size:12px;border-radius:4px}' +
+						'</style></head><body>' +
+						'<div class="info">X = <b id="ox">0</b> &nbsp; Y = <b id="oy">0</b></div>' +
+						'<div class="grid">' +
+						'<div class="e"></div><button onclick="m(0,-20)">▲</button><div class="e"></div>' +
+						'<button onclick="m(-50,0)">◀</button><button onclick="r()" style="font-size:11px">⟲</button><button onclick="m(50,0)">▶</button>' +
+						'<div class="e"></div><button onclick="m(0,20)">▼</button><div class="e"></div>' +
+						'</div>' +
+						'<button class="rst" onclick="r()">Reset</button></body>';
+						function u(x,y){document.getElementById('ox').textContent=x;document.getElementById('oy').textContent=y}
+						function m(dx,dy){console.log('OVL:move:'+dx+':'+dy)}
+						function r(){console.log('OVL:reset')}
+						u(${overlayOffsetX},${overlayOffsetY});
+					`);
+				});
+
+				positionWindow.webContents.on('console-message', (_e, _level, msg) => {
+					if (!msg.startsWith('OVL:')) return;
+					const p = msg.split(':');
+					if (p[1] === 'move') {
+						moveAllOverlays(parseInt(p[2]) || 0, parseInt(p[3]) || 0);
+					} else if (p[1] === 'reset') {
+						overlayOffsetX = 0; overlayOffsetY = 0;
+						saveOverlayConfig();
+						for (const o of activeOverlays) o.applyOffset();
+					}
+					updateDisplay();
+				});
+
+				positionWindow.on('closed', () => { positionWindow = null; });
+			}
+
 			PatchedBrowserWindow = class BrowserWindowWithFrame extends OriginalBrowserWindow {
 				constructor(options) {
 					options = options || {};
@@ -104,24 +223,23 @@ Module.prototype.require = function(id) {
 						}
 
 						if (isOverlay) {
-							// Linux: emulate {forward: true} for setIgnoreMouseEvents.
-							// {forward: true} is macOS-only — on Linux it's silently ignored,
-							// so the overlay either blocks everything (if we no-op) or is
-							// never interactive (if we strip forward).
-							//
-							// Fix: poll cursor position via xdotool (Electron's
-							// getCursorScreenPoint returns stale values when cursor isn't
-							// over an Electron window). When cursor is over non-transparent
-							// overlay content (checked via capturePage alpha), make the
-							// window interactive. The renderer's existing mouseenter/
-							// mouseleave logic then handles toggling back.
 							const { screen: screenModule } = require('electron');
 							const { execFile } = require('child_process');
-							const origSetIgnore = this.setIgnoreMouseEvents.bind(this);
-							let ignoring = false;
-							let polling = false;
 							const debug = process.env.WISPR_DEBUG === '1';
 							const win = this;
+
+							// Save all original methods before any patching
+							const origSetIgnore = this.setIgnoreMouseEvents.bind(this);
+							const origSetBounds = this.setBounds.bind(this);
+							const origSetPos = this.setPosition.bind(this);
+							const origGetBounds = this.getBounds.bind(this);
+							const origGetPos = this.getPosition.bind(this);
+
+							// --- Mouse event forwarding emulation ---
+							// {forward: true} is macOS-only. Poll cursor via xdotool
+							// and check pixel alpha to toggle interactivity.
+							let ignoring = false;
+							let polling = false;
 
 							this.setIgnoreMouseEvents = (ignore, _opts) => {
 								origSetIgnore(ignore);
@@ -129,8 +247,6 @@ Module.prototype.require = function(id) {
 								if (ignore) startPolling();
 							};
 
-							// xdotool works reliably on X11 even when no Electron
-							// window is under the cursor. Falls back to Electron API.
 							const getMousePos = () => new Promise((resolve) => {
 								execFile('xdotool', ['getmouselocation', '--shell'],
 									{ timeout: 500 },
@@ -158,7 +274,8 @@ Module.prototype.require = function(id) {
 											cursor = screenModule.getCursorScreenPoint();
 										}
 
-										const b = win.getBounds();
+										// Use origGetBounds for actual screen position
+										const b = origGetBounds();
 										const inside = cursor.x >= b.x && cursor.x < b.x + b.width &&
 										               cursor.y >= b.y && cursor.y < b.y + b.height;
 
@@ -199,6 +316,68 @@ Module.prototype.require = function(id) {
 							}
 
 							win.on('closed', () => { polling = false; });
+
+							// --- Overlay position offset ---
+							loadOverlayConfig();
+							let baseBounds = null;
+
+							const applyOffset = () => {
+								if (win.isDestroyed()) return;
+								const b = baseBounds || origGetBounds();
+								origSetBounds({
+									...b,
+									x: b.x + overlayOffsetX,
+									y: b.y + overlayOffsetY
+								});
+							};
+
+							// Intercept setBounds/setPosition: store base, apply offset
+							this.setBounds = (bounds, animate) => {
+								baseBounds = { ...bounds };
+								origSetBounds({
+									...bounds,
+									x: bounds.x + overlayOffsetX,
+									y: bounds.y + overlayOffsetY
+								}, animate);
+							};
+
+							this.setPosition = (x, y, animate) => {
+								if (!baseBounds) baseBounds = origGetBounds();
+								baseBounds.x = x;
+								baseBounds.y = y;
+								origSetPos(
+									x + overlayOffsetX,
+									y + overlayOffsetY,
+									animate
+								);
+							};
+
+							// Return base (pre-offset) position so the app
+							// doesn't compound offsets on read→write cycles.
+							this.getBounds = () => {
+								if (baseBounds) return { ...baseBounds };
+								return origGetBounds();
+							};
+
+							this.getPosition = () => {
+								if (baseBounds) return [baseBounds.x, baseBounds.y];
+								return origGetPos();
+							};
+
+							// Apply saved offset to initial position
+							this.once('show', () => {
+								if (!baseBounds) baseBounds = origGetBounds();
+								if (overlayOffsetX !== 0 || overlayOffsetY !== 0) applyOffset();
+							});
+
+							// Track overlay for bulk repositioning
+							const overlayRef = { win, applyOffset };
+							activeOverlays.push(overlayRef);
+
+							win.on('closed', () => {
+								const idx = activeOverlays.indexOf(overlayRef);
+								if (idx >= 0) activeOverlays.splice(idx, 1);
+							});
 						}
 
 						if (!isOverlay) {
@@ -307,6 +486,26 @@ Module.prototype.require = function(id) {
 					}
 				}
 			};
+
+			// Inject "Overlay Position..." item into the tray context menu
+			if (process.platform === 'linux' && result.Tray) {
+				const origSetCtxMenu = result.Tray.prototype.setContextMenu;
+				result.Tray.prototype.setContextMenu = function(menu) {
+					if (menu) {
+						const MARKER = 'Overlay Position...';
+						const hasOurs = menu.items.some(i => i.label === MARKER);
+						if (!hasOurs) {
+							const { MenuItem } = require('electron');
+							menu.append(new MenuItem({ type: 'separator' }));
+							menu.append(new MenuItem({
+								label: MARKER,
+								click: () => openOverlayPositionWindow()
+							}));
+						}
+					}
+					return origSetCtxMenu.call(this, menu);
+				};
+			}
 		}
 
 		return new Proxy(result, {
