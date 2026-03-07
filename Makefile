@@ -16,6 +16,9 @@ build-appimage: download extract patch rebuild-native
 # Re-extracts clean bundle, re-applies patches, repackages AppImage.
 # Skips download and rebuild-native (cached, rarely change).
 rebuild:
+	@pgrep -f '[W]ispr.Flow' | xargs -r kill 2>/dev/null || true
+	@pgrep -f '[w]ispr-flow' --full | grep -v make | xargs -r kill 2>/dev/null || true
+	@sleep 0.5
 	yarn run extract
 	yarn run patch
 	yarn run rebuild-native
