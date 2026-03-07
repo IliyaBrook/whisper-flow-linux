@@ -364,10 +364,38 @@ Module.prototype.require = function(id) {
 								return origGetPos();
 							};
 
-							// Apply saved offset to initial position
+							// Apply saved offset to initial position, then watch
+							// for app-initiated repositioning during startup.
+							// The app may bypass our setBounds/setPosition interceptors,
+							// so we use a temporary move listener to catch and correct.
 							this.once('show', () => {
 								if (!baseBounds) baseBounds = origGetBounds();
-								if (overlayOffsetX !== 0 || overlayOffsetY !== 0) applyOffset();
+								if (overlayOffsetX === 0 && overlayOffsetY === 0) return;
+
+								applyOffset();
+
+								// Temporary move watcher for startup (5s window)
+								let reapplyGuard = false;
+								let reapplyDebounce = null;
+								const onStartupMove = () => {
+									if (reapplyGuard) return;
+									if (reapplyDebounce) clearTimeout(reapplyDebounce);
+									reapplyDebounce = setTimeout(() => {
+										if (win.isDestroyed()) return;
+										const actual = origGetBounds();
+										const expectedX = baseBounds.x + overlayOffsetX;
+										const expectedY = baseBounds.y + overlayOffsetY;
+										if (Math.abs(actual.x - expectedX) > 2 || Math.abs(actual.y - expectedY) > 2) {
+											// App repositioned the overlay — adopt new base, re-apply offset
+											baseBounds = { x: actual.x, y: actual.y, width: actual.width, height: actual.height };
+											reapplyGuard = true;
+											applyOffset();
+											setTimeout(() => { reapplyGuard = false; }, 300);
+										}
+									}, 200);
+								};
+								win.on('move', onStartupMove);
+								setTimeout(() => { win.removeListener('move', onStartupMove); }, 5000);
 							});
 
 							// Track overlay for bulk repositioning
