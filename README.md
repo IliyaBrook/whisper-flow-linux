@@ -10,10 +10,13 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/IliyaBrook/whisper-flow-linux/releases"><img src="https://img.shields.io/github/v/release/IliyaBrook/whisper-flow-linux?style=flat-square&label=Download" alt="Release" /></a>
-  <img src="https://img.shields.io/badge/platform-Linux%20x86__64-blue?style=flat-square" alt="Platform" />
-  <img src="https://img.shields.io/badge/display-X11%20%7C%20Wayland-green?style=flat-square" alt="Display Server" />
-  <img src="https://img.shields.io/github/license/IliyaBrook/whisper-flow-linux?style=flat-square" alt="License" />
+  <a href="https://github.com/IliyaBrook/whisper-flow-linux/releases/latest"><img src="https://img.shields.io/github/v/release/IliyaBrook/whisper-flow-linux?style=for-the-badge&label=Release&color=blue" alt="Release" /></a>
+  &nbsp;
+  <img src="https://img.shields.io/badge/Platform-Linux%20x86__64-orange?style=for-the-badge&logo=linux&logoColor=white" alt="Platform" />
+  &nbsp;
+  <img src="https://img.shields.io/badge/Display-X11%20%7C%20Wayland-green?style=for-the-badge" alt="Display Server" />
+  &nbsp;
+  <a href="https://github.com/IliyaBrook/whisper-flow-linux/blob/main/LICENSE"><img src="https://img.shields.io/github/license/IliyaBrook/whisper-flow-linux?style=for-the-badge" alt="License" /></a>
 </p>
 
 ---
