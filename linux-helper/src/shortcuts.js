@@ -148,8 +148,8 @@ class ShortcutManager {
       this.xinputProcess.kill();
       this.xinputProcess = null;
     }
-    for (const sock of this.evdevStreams) {
-      try { sock.destroy(); } catch (e) { /* ignore */ }
+    for (const proc of this.evdevStreams) {
+      try { proc.kill(); } catch (e) { /* ignore */ }
     }
     this.evdevStreams = [];
     this._pressedKeys.clear();
@@ -220,31 +220,29 @@ class ShortcutManager {
   }
 
   _openEvdevDevice(devicePath) {
-    // Use net.Socket to read evdev devices via the event loop directly.
-    // fs.createReadStream uses libuv's thread pool for reads, and with
-    // multiple blocking evdev devices, it exhausts the pool (default 4 threads),
-    // causing all reads to stall. net.Socket uses epoll/poll on the event loop,
-    // which works because evdev devices support poll().
-    const net = require('net');
-    let fd;
+    // Read evdev device via a small child process to avoid libuv thread pool issues.
+    // fs.createReadStream on character devices uses blocking reads in the thread pool,
+    // and with multiple devices it can exhaust the pool. Using a child process with
+    // unbuffered output avoids this entirely.
+    let proc;
     try {
-      fd = fs.openSync(devicePath, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
-      dbg(`opened ${devicePath} fd=${fd} (nonblock+socket)`);
+      proc = spawn('dd', [`if=${devicePath}`, 'bs=72', 'iflag=fullblock'], {
+        stdio: ['ignore', 'pipe', 'ignore']
+      });
+      dbg(`spawned dd for ${devicePath} pid=${proc.pid}`);
     } catch (err) {
-      dbg(`FAILED to open ${devicePath}: ${err.message}`);
+      dbg(`FAILED to spawn dd for ${devicePath}: ${err.message}`);
       return false;
     }
 
-    const socket = new net.Socket({ fd, readable: true, writable: false });
     let remainder = Buffer.alloc(0);
 
-    socket.on('data', (chunk) => {
+    proc.stdout.on('data', (chunk) => {
       dbg(`evdev data from ${devicePath}: ${chunk.length} bytes`);
       const data = remainder.length > 0 ? Buffer.concat([remainder, chunk]) : chunk;
       let offset = 0;
 
       while (offset + INPUT_EVENT_SIZE <= data.length) {
-        // struct input_event: timeval(16) + type(2) + code(2) + value(4)
         const type = data.readUInt16LE(offset + 16);
         const code = data.readUInt16LE(offset + 18);
         const value = data.readInt32LE(offset + 20);
@@ -273,14 +271,14 @@ class ShortcutManager {
       remainder = offset < data.length ? data.subarray(offset) : Buffer.alloc(0);
     });
 
-    socket.on('error', (err) => {
-      dbg(`evdev error ${devicePath}: ${err.message}`);
-      this.evdevStreams = this.evdevStreams.filter(s => s !== socket);
+    proc.on('error', (err) => {
+      dbg(`evdev proc error ${devicePath}: ${err.message}`);
+      this.evdevStreams = this.evdevStreams.filter(p => p !== proc);
     });
 
-    socket.on('close', () => {
-      dbg(`evdev closed ${devicePath}`);
-      this.evdevStreams = this.evdevStreams.filter(s => s !== socket);
+    proc.on('close', () => {
+      dbg(`evdev proc closed ${devicePath}`);
+      this.evdevStreams = this.evdevStreams.filter(p => p !== proc);
       if (this.active && this._usingEvdev) {
         setTimeout(() => {
           if (this.active) this._openEvdevDevice(devicePath);
@@ -288,7 +286,7 @@ class ShortcutManager {
       }
     });
 
-    this.evdevStreams.push(socket);
+    this.evdevStreams.push(proc);
     return true;
   }
 

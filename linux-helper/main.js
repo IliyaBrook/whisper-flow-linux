@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+// Increase libuv thread pool BEFORE any I/O — we need enough threads
+// for multiple blocking evdev reads + other async file operations.
+process.env.UV_THREADPOOL_SIZE = '16';
+
 /**
  * Wispr Flow Linux Helper
  *
