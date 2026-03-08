@@ -4,6 +4,9 @@
 const Module = require('module');
 const originalRequire = Module.prototype.require;
 
+// Detect Wayland vs X11 for platform-specific overlay behavior
+const _isWayland = (process.env.XDG_SESSION_TYPE === 'wayland') || !!process.env.WAYLAND_DISPLAY;
+
 // Detect overlay/popup windows that should stay frameless.
 // Overlays have type:"toolbar" or alwaysOnTop+skipTaskbar.
 // The hub window is the only one WITHOUT these overlay properties.
@@ -135,9 +138,9 @@ Module.prototype.require = function(id) {
 						'</style></head><body>' +
 						'<div class="info">X = <b id="ox">0</b> &nbsp; Y = <b id="oy">0</b></div>' +
 						'<div class="grid">' +
-						'<div class="e"></div><button onclick="m(0,-20)">▲</button><div class="e"></div>' +
-						'<button onclick="m(-50,0)">◀</button><button onclick="r()" style="font-size:11px">⟲</button><button onclick="m(50,0)">▶</button>' +
-						'<div class="e"></div><button onclick="m(0,20)">▼</button><div class="e"></div>' +
+						'<div class="e"></div><button onclick="m(0,-20)">\u25B2</button><div class="e"></div>' +
+						'<button onclick="m(-50,0)">\u25C0</button><button onclick="r()" style="font-size:11px">\u27F2</button><button onclick="m(50,0)">\u25B6</button>' +
+						'<div class="e"></div><button onclick="m(0,20)">\u25BC</button><div class="e"></div>' +
 						'</div>' +
 						'<button class="rst" onclick="r()">Reset</button></body>';
 						function u(x,y){document.getElementById('ox').textContent=x;document.getElementById('oy').textContent=y}
@@ -201,7 +204,7 @@ Module.prototype.require = function(id) {
 							} catch (e) { /* screen not ready */ }
 						} else {
 							// Overlay windows on Linux:
-							// Remove type:"toolbar" — it binds the window to its parent.
+							// Remove type:"toolbar" \u2014 it binds the window to its parent.
 							// Keep focusable:true so overlay buttons can be clicked.
 							if (options.type === 'toolbar') {
 								delete options.type;
@@ -282,19 +285,54 @@ Module.prototype.require = function(id) {
 										if (ignoring && inside) {
 											const relX = Math.max(0, Math.min(cursor.x - b.x, b.width - 1));
 											const relY = Math.max(0, Math.min(cursor.y - b.y, b.height - 1));
-											const img = await win.webContents.capturePage({
-												x: relX, y: relY, width: 1, height: 1
-											});
-											if (!win.isDestroyed() && ignoring) {
+
+											// Check if cursor is over non-transparent content.
+											// Primary: capturePage pixel alpha.
+											// Fallback: elementFromPoint (for X11 where capturePage
+											// may return empty bitmaps on click-through windows).
+											let isHit = false;
+											try {
+												const img = await win.webContents.capturePage({
+													x: relX, y: relY, width: 1, height: 1
+												});
 												const bmp = img.toBitmap();
 												if (bmp.length >= 4 && bmp[3] > 10) {
-													if (debug) console.log(`[Overlay] hit (${relX},${relY}) a=${bmp[3]} — interactive`);
-													origSetIgnore(false);
-													ignoring = false;
+													isHit = true;
+													if (debug) console.log(`[Overlay] capturePage hit (${relX},${relY}) a=${bmp[3]}`);
+												}
+											} catch { /* capturePage failed */ }
+
+											// Fallback: DOM hit-test via elementFromPoint
+											if (!isHit && !win.isDestroyed() && ignoring) {
+												try {
+													isHit = await win.webContents.executeJavaScript(
+														`(function(){` +
+														`var e=document.elementFromPoint(${relX},${relY});` +
+														`return !!(e&&e!==document.documentElement&&e!==document.body);` +
+														`})()`
+													);
+													if (isHit && debug) console.log(`[Overlay] elementFromPoint hit (${relX},${relY})`);
+												} catch { /* ignore */ }
+											}
+
+											if (!win.isDestroyed() && ignoring && isHit) {
+												if (debug) console.log(`[Overlay] making interactive`);
+												origSetIgnore(false);
+												ignoring = false;
+												// X11: after restoring input shape, X server
+												// doesn't send EnterNotify because cursor is
+												// already inside the window area. Force re-raise
+												// and nudge cursor to trigger event delivery.
+												if (!_isWayland) {
+													win.moveTop();
+													execFile('xdotool', [
+														'mousemove', '--screen', '0',
+														String(cursor.x), String(cursor.y)
+													], { timeout: 500 }, () => {});
 												}
 											}
 										} else if (!ignoring && !inside) {
-											if (debug) console.log('[Overlay] cursor left bounds — click-through');
+											if (debug) console.log('[Overlay] cursor left bounds \u2014 click-through');
 											origSetIgnore(true);
 											ignoring = true;
 										}
@@ -353,7 +391,7 @@ Module.prototype.require = function(id) {
 							};
 
 							// Return base (pre-offset) position so the app
-							// doesn't compound offsets on read→write cycles.
+							// doesn't compound offsets on read\u2192write cycles.
 							this.getBounds = () => {
 								if (baseBounds) return { ...baseBounds };
 								return origGetBounds();
@@ -365,19 +403,22 @@ Module.prototype.require = function(id) {
 							};
 
 							// Apply saved offset to initial position, then watch
-							// for app-initiated repositioning during startup.
-							// The app may bypass our setBounds/setPosition interceptors,
-							// so we use a temporary move listener to catch and correct.
+							// for app/WM-initiated repositioning permanently.
+							// On X11, WMs can reposition windows at any time (not just
+							// during startup), so we keep the listener active.
 							this.once('show', () => {
 								if (!baseBounds) baseBounds = origGetBounds();
-								if (overlayOffsetX === 0 && overlayOffsetY === 0) return;
+								if (overlayOffsetX !== 0 || overlayOffsetY !== 0) {
+									applyOffset();
+								}
 
-								applyOffset();
-
-								// Temporary move watcher for startup (5s window)
+								// Permanent move watcher: re-applies offset when
+								// app or WM repositions the overlay bypassing our
+								// patched setBounds/setPosition interceptors.
 								let reapplyGuard = false;
 								let reapplyDebounce = null;
-								const onStartupMove = () => {
+								win.on('move', () => {
+									if (overlayOffsetX === 0 && overlayOffsetY === 0) return;
 									if (reapplyGuard) return;
 									if (reapplyDebounce) clearTimeout(reapplyDebounce);
 									reapplyDebounce = setTimeout(() => {
@@ -386,16 +427,14 @@ Module.prototype.require = function(id) {
 										const expectedX = baseBounds.x + overlayOffsetX;
 										const expectedY = baseBounds.y + overlayOffsetY;
 										if (Math.abs(actual.x - expectedX) > 2 || Math.abs(actual.y - expectedY) > 2) {
-											// App repositioned the overlay — adopt new base, re-apply offset
+											// App/WM repositioned the overlay \u2014 adopt new base, re-apply offset
 											baseBounds = { x: actual.x, y: actual.y, width: actual.width, height: actual.height };
 											reapplyGuard = true;
 											applyOffset();
 											setTimeout(() => { reapplyGuard = false; }, 300);
 										}
 									}, 200);
-								};
-								win.on('move', onStartupMove);
-								setTimeout(() => { win.removeListener('move', onStartupMove); }, 5000);
+								});
 							});
 
 							// Track overlay for bulk repositioning
