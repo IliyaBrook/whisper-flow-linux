@@ -244,23 +244,21 @@ Module.prototype.require = function(id) {
 				const displays = s.getAllDisplays();
 				const sourceWin = ref.win;
 				if (sourceWin.isDestroyed()) return;
-				const srcDisplay = getDisplayForBounds(ref.getBaseBounds());
 				const enabledSet = new Set(overlayConfig.enabledDisplayIds.map(String));
-				// Remove clones for disabled or source displays
+				// Remove clones for disabled displays
 				for (let i = cloneWindows.length - 1; i >= 0; i--) {
 					const c = cloneWindows[i];
 					if (c.sourceWin !== sourceWin) continue;
-					if (!enabledSet.has(String(c.displayId)) || String(c.displayId) === String(srcDisplay.id)) {
+					if (!enabledSet.has(String(c.displayId))) {
 						if (!c.win.isDestroyed()) c.win.destroy();
 						cloneWindows.splice(i, 1);
 					}
 				}
-				// Create clones for newly enabled displays
+				// Create clones for ALL enabled displays (original is always hidden)
 				const existing = new Set(
 					cloneWindows.filter(c => c.sourceWin === sourceWin).map(c => String(c.displayId))
 				);
 				for (const did of enabledSet) {
-					if (did === String(srcDisplay.id)) continue;
 					if (existing.has(did)) continue;
 					const target = displays.find(d => String(d.id) === did);
 					if (target) createCloneForDisplay(ref, target);
@@ -433,6 +431,8 @@ Module.prototype.require = function(id) {
 							if (options.focusable === false) {
 								options.focusable = true;
 							}
+							// Prevent auto-show: we control visibility via clones
+							options.show = false;
 						}
 					}
 
@@ -571,30 +571,21 @@ Module.prototype.require = function(id) {
 							win.on('closed', () => { polling = false; });
 
 							// --- Per-display position offset ---
+							// Original overlay is ALWAYS invisible.
+							// All visible overlays are our managed clones.
 							loadOverlayConfig();
 							let baseBounds = null;
-							let overlayDisabled = false;
 
-							const applyOffset = () => {
+							// Hide original: off-screen + opacity 0 (belt and suspenders)
+							const hideOriginal = () => {
 								if (win.isDestroyed()) return;
 								const b = baseBounds || origGetBounds();
-								const display = getDisplayForBounds(b);
-								const enabledSet = new Set(overlayConfig.enabledDisplayIds.map(String));
-								if (enabledSet.size > 0 && !enabledSet.has(String(display.id))) {
-									overlayDisabled = true;
-									origSetBounds({ x: -99999, y: -99999, width: b.width, height: b.height });
-								} else {
-									overlayDisabled = false;
-									const offset = getDisplayOffset(display.id);
-									origSetBounds({
-										...b,
-										x: b.x + offset.x,
-										y: b.y + offset.y
-									});
-								}
+								origSetBounds({ x: -99999, y: -99999, width: b.width, height: b.height });
+								try { win.setOpacity(0); } catch {}
 							};
 
-							// Define overlay reference early so interceptors can use it
+							const applyOffset = hideOriginal;
+
 							const overlayRef = {
 								win,
 								applyOffset,
@@ -605,24 +596,11 @@ Module.prototype.require = function(id) {
 							};
 							activeOverlays.push(overlayRef);
 
-							// Intercept setBounds/setPosition: store base, apply per-display offset
+							// Intercept setBounds/setPosition: store base, keep hidden, sync clones
 							this.setBounds = (bounds, animate) => {
 								baseBounds = { ...bounds };
-								const display = getDisplayForBounds(bounds);
-								const enabledSet = new Set(overlayConfig.enabledDisplayIds.map(String));
-								if (enabledSet.size > 0 && !enabledSet.has(String(display.id))) {
-									overlayDisabled = true;
-									origSetBounds({ ...bounds, x: -99999, y: -99999 }, animate);
-								} else {
-									overlayDisabled = false;
-									const offset = getDisplayOffset(display.id);
-									origSetBounds({
-										...bounds,
-										x: bounds.x + offset.x,
-										y: bounds.y + offset.y
-									}, animate);
-								}
-								// Sync clone sizes and positions
+								origSetBounds({ ...bounds, x: -99999, y: -99999 }, animate);
+								try { win.setOpacity(0); } catch {}
 								for (const c of cloneWindows) {
 									if (c.sourceWin === win && !c.win.isDestroyed()) {
 										updateClonePosition(c, { width: bounds.width, height: bounds.height });
@@ -634,15 +612,12 @@ Module.prototype.require = function(id) {
 								if (!baseBounds) baseBounds = origGetBounds();
 								baseBounds.x = x;
 								baseBounds.y = y;
-								const display = getDisplayForBounds(baseBounds);
-								const enabledSet = new Set(overlayConfig.enabledDisplayIds.map(String));
-								if (enabledSet.size > 0 && !enabledSet.has(String(display.id))) {
-									overlayDisabled = true;
-									origSetPos(-99999, -99999, animate);
-								} else {
-									overlayDisabled = false;
-									const offset = getDisplayOffset(display.id);
-									origSetPos(x + offset.x, y + offset.y, animate);
+								origSetPos(-99999, -99999, animate);
+								try { win.setOpacity(0); } catch {}
+								for (const c of cloneWindows) {
+									if (c.sourceWin === win && !c.win.isDestroyed()) {
+										updateClonePosition(c);
+									}
 								}
 							};
 
@@ -656,6 +631,42 @@ Module.prototype.require = function(id) {
 							this.getPosition = () => {
 								if (baseBounds) return [baseBounds.x, baseBounds.y];
 								return origGetPos();
+							};
+
+							// Intercept show()/showInactive(): NEVER let original be visible.
+							// Show clones instead.
+							const origShow = win.show.bind(win);
+							const origHide = win.hide.bind(win);
+							let firstShowDone = false;
+
+							win.show = function() {
+								if (!firstShowDone) {
+									firstShowDone = true;
+									if (!baseBounds) {
+										// Capture intended position before hiding
+										const b = origGetBounds();
+										if (b.x > -9000) baseBounds = { ...b };
+									}
+									hideOriginal();
+									origShow();
+									// Create clones after brief delay for content to load
+									setTimeout(() => syncClonesForOverlay(overlayRef), 500);
+								} else {
+									hideOriginal();
+									origShow();
+								}
+								for (const c of cloneWindows) {
+									if (c.sourceWin === win && !c.win.isDestroyed()) c.win.show();
+								}
+							};
+
+							win.showInactive = function() { win.show(); };
+
+							win.hide = function() {
+								origHide();
+								for (const c of cloneWindows) {
+									if (c.sourceWin === win && !c.win.isDestroyed()) c.win.hide();
+								}
 							};
 
 							// Content sync: forward IPC messages to clones
@@ -681,58 +692,32 @@ Module.prototype.require = function(id) {
 								return p;
 							};
 
-							// Clone visibility sync
-							win.on('show', () => {
-								for (const c of cloneWindows) {
-									if (c.sourceWin === win && !c.win.isDestroyed()) c.win.show();
-								}
-							});
-							win.on('hide', () => {
-								for (const c of cloneWindows) {
-									if (c.sourceWin === win && !c.win.isDestroyed()) c.win.hide();
-								}
-							});
-
-							// Apply saved offset and create clones on first show
-							this.once('show', () => {
-								if (!baseBounds) baseBounds = origGetBounds();
-								applyOffset();
-
-								// Create clones after content loads
-								setTimeout(() => {
-									syncClonesForOverlay(overlayRef);
-								}, 500);
-
-								// Permanent move watcher: re-applies offset when
-								// app or WM repositions the overlay
-								let reapplyGuard = false;
-								let reapplyDebounce = null;
-								win.on('move', () => {
-									if (overlayDisabled) return;
-									if (reapplyGuard) return;
-									const b = baseBounds || origGetBounds();
-									const display = getDisplayForBounds(b);
-									const offset = getDisplayOffset(display.id);
-									if (offset.x === 0 && offset.y === 0) return;
-									if (reapplyDebounce) clearTimeout(reapplyDebounce);
-									reapplyDebounce = setTimeout(() => {
-										if (win.isDestroyed()) return;
-										const actual = origGetBounds();
-										if (actual.x <= -9999) return;
-										const expectedX = b.x + offset.x;
-										const expectedY = b.y + offset.y;
-										if (Math.abs(actual.x - expectedX) > 2 || Math.abs(actual.y - expectedY) > 2) {
-											baseBounds = { x: actual.x, y: actual.y, width: actual.width, height: actual.height };
-											reapplyGuard = true;
-											applyOffset();
-											setTimeout(() => { reapplyGuard = false; }, 300);
+							// Move watcher: if app/WM somehow makes original visible, re-hide
+							let reapplyGuard = false;
+							let reapplyDebounce = null;
+							win.on('move', () => {
+								if (reapplyGuard) return;
+								if (reapplyDebounce) clearTimeout(reapplyDebounce);
+								reapplyDebounce = setTimeout(() => {
+									if (win.isDestroyed()) return;
+									const actual = origGetBounds();
+									if (actual.x > -9999 && actual.y > -9999) {
+										baseBounds = { ...actual };
+										reapplyGuard = true;
+										hideOriginal();
+										for (const c of cloneWindows) {
+											if (c.sourceWin === win && !c.win.isDestroyed()) {
+												updateClonePosition(c, { width: actual.width, height: actual.height });
+											}
 										}
-									}, 200);
-								});
+										setTimeout(() => { reapplyGuard = false; }, 300);
+									}
+								}, 50);
 							});
 
 							// Cleanup on close
 							win.on('closed', () => {
+								polling = false;
 								const idx = activeOverlays.indexOf(overlayRef);
 								if (idx >= 0) activeOverlays.splice(idx, 1);
 								for (let i = cloneWindows.length - 1; i >= 0; i--) {
