@@ -520,7 +520,7 @@ Module.prototype.require = function(id) {
 				const origSetCtxMenu = result.Tray.prototype.setContextMenu;
 				result.Tray.prototype.setContextMenu = function(menu) {
 					if (menu) {
-						const MARKER = 'Overlay Position...';
+						const MARKER = 'Overlay Position';
 						const hasOurs = menu.items.some(i => i.label === MARKER);
 						if (!hasOurs) {
 							const { MenuItem } = require('electron');
