@@ -241,9 +241,11 @@ Module.prototype.require = function(id) {
 							// --- Mouse event forwarding emulation ---
 							// {forward: true} is macOS-only. Poll cursor and keep click-through
 							// enabled unless we are over visible/interactive overlay pixels.
-							let ignoring = false;
-							let polling = false;
-							let missCount = 0;
+								let ignoring = false;
+								let polling = false;
+								let missCount = 0;
+								let lastHitAt = 0;
+								let stickyRect = null;
 
 							this.setIgnoreMouseEvents = (ignore, _opts) => {
 								origSetIgnore(ignore);
@@ -279,32 +281,68 @@ Module.prototype.require = function(id) {
 								);
 							});
 
-							const domHitTest = (x, y) => win.webContents.executeJavaScript(
-								`(() => {
-									const els = document.elementsFromPoint ? document.elementsFromPoint(${x}, ${y}) : [];
-									const list = els && els.length ? els : [document.elementFromPoint(${x}, ${y})].filter(Boolean);
-									for (const e of list) {
-										if (!e || e === document.documentElement || e === document.body) continue;
-										const cs = getComputedStyle(e);
-										if (!cs || cs.pointerEvents === 'none' || cs.visibility === 'hidden' || Number(cs.opacity || '1') === 0) continue;
-										if (e.closest('[data-testid],[data-indicator-state],button,[role="button"],[aria-label],a,input,textarea,select')) return true;
-										const r = e.getBoundingClientRect();
-										if (r.width < 2 || r.height < 2) continue;
-										const full = r.width >= (window.innerWidth * 0.9) && r.height >= (window.innerHeight * 0.9);
-										const painted = (
-											cs.backgroundColor !== 'rgba(0, 0, 0, 0)' &&
-											cs.backgroundColor !== 'transparent'
-										) || (
-											cs.borderTopWidth !== '0px' ||
-											cs.borderRightWidth !== '0px' ||
-											cs.borderBottomWidth !== '0px' ||
-											cs.borderLeftWidth !== '0px'
-										) || (cs.boxShadow && cs.boxShadow !== 'none');
-										if (!full && painted) return true;
-									}
-									return false;
-								})()`
-							);
+								const domHitTest = (x, y) => win.webContents.executeJavaScript(
+									`(() => {
+										const radius = 4;
+										const step = 2;
+										const classify = (e) => {
+											if (!e || e === document.documentElement || e === document.body) return null;
+											const cs = getComputedStyle(e);
+											if (!cs || cs.pointerEvents === 'none' || cs.visibility === 'hidden' || Number(cs.opacity || '1') === 0) return null;
+											const marker = e.closest('[data-testid],[data-indicator-state],button,[role="button"],[aria-label],a,input,textarea,select');
+											if (marker) {
+												const m = marker.getBoundingClientRect();
+												if (m.width >= 2 && m.height >= 2) {
+													return { hit: true, rect: { x: m.x, y: m.y, width: m.width, height: m.height } };
+												}
+											}
+											const r = e.getBoundingClientRect();
+											if (r.width < 2 || r.height < 2) return null;
+											const full = r.width >= (window.innerWidth * 0.9) && r.height >= (window.innerHeight * 0.9);
+											const painted = (
+												cs.backgroundColor !== 'rgba(0, 0, 0, 0)' &&
+												cs.backgroundColor !== 'transparent'
+											) || (
+												cs.borderTopWidth !== '0px' ||
+												cs.borderRightWidth !== '0px' ||
+												cs.borderBottomWidth !== '0px' ||
+												cs.borderLeftWidth !== '0px'
+											) || (cs.boxShadow && cs.boxShadow !== 'none');
+											if (!full && painted) {
+												let best = { x: r.x, y: r.y, width: r.width, height: r.height };
+												let node = e.parentElement;
+												for (let i = 0; i < 6 && node && node !== document.body; i += 1) {
+													const nr = node.getBoundingClientRect();
+													const ncs = getComputedStyle(node);
+													const nfull = nr.width >= (window.innerWidth * 0.9) && nr.height >= (window.innerHeight * 0.9);
+													const nvisible = ncs && ncs.visibility !== 'hidden' && Number(ncs.opacity || '1') > 0 && ncs.pointerEvents !== 'none';
+													if (!nvisible || nfull || nr.width < 2 || nr.height < 2) break;
+													// Grow target to a reasonable hover shell around overlay controls.
+													if (nr.width <= 420 && nr.height <= 180 && nr.width >= best.width && nr.height >= best.height) {
+														best = { x: nr.x, y: nr.y, width: nr.width, height: nr.height };
+													}
+													node = node.parentElement;
+												}
+												return { hit: true, rect: best };
+											}
+											return null;
+										};
+
+										for (let dx = -radius; dx <= radius; dx += step) {
+											for (let dy = -radius; dy <= radius; dy += step) {
+												const px = ${x} + dx;
+												const py = ${y} + dy;
+												const els = document.elementsFromPoint ? document.elementsFromPoint(px, py) : [];
+												const list = els && els.length ? els : [document.elementFromPoint(px, py)].filter(Boolean);
+												for (const e of list) {
+													const res = classify(e);
+													if (res && res.hit) return res;
+												}
+											}
+										}
+										return { hit: false, rect: null };
+									})()`
+								);
 
 							async function pollTick() {
 								if (win.isDestroyed()) { polling = false; return; }
@@ -320,12 +358,14 @@ Module.prototype.require = function(id) {
 											const relY = Math.max(0, Math.min(cursor.y - b.y, b.height - 1));
 
 												let isHit = false;
+												let hitRect = null;
 												if (ignoring) {
 													try {
 														const img = await win.webContents.capturePage({ x: relX, y: relY, width: 1, height: 1 });
 														const bmp = img.toBitmap();
 														if (bmp.length >= 4 && bmp[3] > 10) {
 															isHit = true;
+															hitRect = { x: relX - 6, y: relY - 6, width: 12, height: 12 };
 															if (debug) console.log(`[Overlay] capturePage hit (${relX},${relY}) a=${bmp[3]}`);
 														}
 													} catch { /* capturePage failed */ }
@@ -333,9 +373,24 @@ Module.prototype.require = function(id) {
 
 												if (!isHit && !win.isDestroyed()) {
 													try {
-														isHit = await domHitTest(relX, relY);
+														const domRes = await domHitTest(relX, relY);
+														isHit = !!(domRes && domRes.hit);
+														hitRect = domRes && domRes.rect ? domRes.rect : null;
 														if (isHit && debug) console.log(`[Overlay] DOM hit (${relX},${relY})`);
 													} catch { /* ignore */ }
+												}
+
+												if (isHit) {
+													lastHitAt = Date.now();
+													if (hitRect) {
+														const inflate = 8;
+														stickyRect = {
+															x: b.x + hitRect.x - inflate,
+															y: b.y + hitRect.y - inflate,
+															width: hitRect.width + inflate * 2,
+															height: hitRect.height + inflate * 2
+														};
+													}
 												}
 
 											if (!win.isDestroyed() && ignoring && isHit) {
@@ -349,25 +404,33 @@ Module.prototype.require = function(id) {
 														execFile('xdotool', ['mousemove_relative', '--', '-1', '0'], { timeout: 500 }, () => {});
 													});
 												}
-											} else if (!win.isDestroyed() && !ignoring) {
-												if (!isHit) {
-													missCount += 1;
-													if (missCount >= 2) {
-														if (debug) console.log('[Overlay] transparent area inside bounds - click-through');
-														origSetIgnore(true);
-														ignoring = true;
+												} else if (!win.isDestroyed() && !ignoring) {
+													const now = Date.now();
+													const inStickyRect = !!(stickyRect &&
+														cursor.x >= stickyRect.x &&
+														cursor.x < stickyRect.x + stickyRect.width &&
+														cursor.y >= stickyRect.y &&
+														cursor.y < stickyRect.y + stickyRect.height);
+													const stickyHold = (now - lastHitAt) < 420;
+													if (!isHit && !inStickyRect && !stickyHold) {
+														missCount += 1;
+														if (missCount >= 12) {
+															if (debug) console.log('[Overlay] transparent area inside bounds - click-through');
+															origSetIgnore(true);
+															ignoring = true;
+															missCount = 0;
+														}
+													} else {
 														missCount = 0;
 													}
-												} else {
-													missCount = 0;
 												}
-											}
-										} else if (!ignoring) {
+											} else if (!ignoring) {
 											if (debug) console.log('[Overlay] cursor left bounds - click-through');
-											origSetIgnore(true);
-											ignoring = true;
-											missCount = 0;
-										}
+												origSetIgnore(true);
+												ignoring = true;
+												missCount = 0;
+												stickyRect = null;
+											}
 									}
 								} catch (e) {
 									if (debug) console.log('[Overlay] poll:', e.message);
