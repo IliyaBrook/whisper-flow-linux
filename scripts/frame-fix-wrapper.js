@@ -239,10 +239,11 @@ Module.prototype.require = function(id) {
 							const origGetPos = this.getPosition.bind(this);
 
 							// --- Mouse event forwarding emulation ---
-							// {forward: true} is macOS-only. Poll cursor via xdotool
-							// and check pixel alpha to toggle interactivity.
+							// {forward: true} is macOS-only. Poll cursor and keep click-through
+							// enabled unless we are over visible/interactive overlay pixels.
 							let ignoring = false;
 							let polling = false;
+							let missCount = 0;
 
 							this.setIgnoreMouseEvents = (ignore, _opts) => {
 								origSetIgnore(ignore);
@@ -250,15 +251,27 @@ Module.prototype.require = function(id) {
 								if (ignore) startPolling();
 							};
 
+							const toDipPoint = (point) => {
+								if (!point || typeof point.x !== 'number' || typeof point.y !== 'number') {
+									return screenModule.getCursorScreenPoint();
+								}
+								if (typeof screenModule.screenToDipPoint === 'function') {
+									try {
+										return screenModule.screenToDipPoint(point);
+									} catch { /* fallback below */ }
+								}
+								return point;
+							};
+
 							const getMousePos = () => new Promise((resolve) => {
 								execFile('xdotool', ['getmouselocation', '--shell'],
 									{ timeout: 500 },
 									(err, stdout) => {
 										if (!err && stdout) {
-											const mx = parseInt((stdout.match(/X=(\d+)/) || [])[1]);
-											const my = parseInt((stdout.match(/Y=(\d+)/) || [])[1]);
+											const mx = parseInt((stdout.match(/X=(\d+)/) || [])[1], 10);
+											const my = parseInt((stdout.match(/Y=(\d+)/) || [])[1], 10);
 											if (!isNaN(mx) && !isNaN(my)) {
-												return resolve({ x: mx, y: my });
+												return resolve(toDipPoint({ x: mx, y: my }));
 											}
 										}
 										resolve(screenModule.getCursorScreenPoint());
@@ -266,75 +279,94 @@ Module.prototype.require = function(id) {
 								);
 							});
 
+							const domHitTest = (x, y) => win.webContents.executeJavaScript(
+								`(() => {
+									const els = document.elementsFromPoint ? document.elementsFromPoint(${x}, ${y}) : [];
+									const list = els && els.length ? els : [document.elementFromPoint(${x}, ${y})].filter(Boolean);
+									for (const e of list) {
+										if (!e || e === document.documentElement || e === document.body) continue;
+										const cs = getComputedStyle(e);
+										if (!cs || cs.pointerEvents === 'none' || cs.visibility === 'hidden' || Number(cs.opacity || '1') === 0) continue;
+										if (e.closest('[data-testid],[data-indicator-state],button,[role="button"],[aria-label],a,input,textarea,select')) return true;
+										const r = e.getBoundingClientRect();
+										if (r.width < 2 || r.height < 2) continue;
+										const full = r.width >= (window.innerWidth * 0.9) && r.height >= (window.innerHeight * 0.9);
+										const painted = (
+											cs.backgroundColor !== 'rgba(0, 0, 0, 0)' &&
+											cs.backgroundColor !== 'transparent'
+										) || (
+											cs.borderTopWidth !== '0px' ||
+											cs.borderRightWidth !== '0px' ||
+											cs.borderBottomWidth !== '0px' ||
+											cs.borderLeftWidth !== '0px'
+										) || (cs.boxShadow && cs.boxShadow !== 'none');
+										if (!full && painted) return true;
+									}
+									return false;
+								})()`
+							);
+
 							async function pollTick() {
 								if (win.isDestroyed()) { polling = false; return; }
 								try {
 									if (win.isVisible()) {
-										let cursor;
-										if (ignoring) {
-											cursor = await getMousePos();
-										} else {
-											cursor = screenModule.getCursorScreenPoint();
-										}
-
-										// Use origGetBounds for actual screen position
+										const cursor = ignoring ? await getMousePos() : screenModule.getCursorScreenPoint();
 										const b = origGetBounds();
 										const inside = cursor.x >= b.x && cursor.x < b.x + b.width &&
-										               cursor.y >= b.y && cursor.y < b.y + b.height;
+											cursor.y >= b.y && cursor.y < b.y + b.height;
 
-										if (ignoring && inside) {
+										if (inside) {
 											const relX = Math.max(0, Math.min(cursor.x - b.x, b.width - 1));
 											const relY = Math.max(0, Math.min(cursor.y - b.y, b.height - 1));
 
-											// Check if cursor is over non-transparent content.
-											// Primary: capturePage pixel alpha.
-											// Fallback: elementFromPoint (for X11 where capturePage
-											// may return empty bitmaps on click-through windows).
-											let isHit = false;
-											try {
-												const img = await win.webContents.capturePage({
-													x: relX, y: relY, width: 1, height: 1
-												});
-												const bmp = img.toBitmap();
-												if (bmp.length >= 4 && bmp[3] > 10) {
-													isHit = true;
-													if (debug) console.log(`[Overlay] capturePage hit (${relX},${relY}) a=${bmp[3]}`);
+												let isHit = false;
+												if (ignoring) {
+													try {
+														const img = await win.webContents.capturePage({ x: relX, y: relY, width: 1, height: 1 });
+														const bmp = img.toBitmap();
+														if (bmp.length >= 4 && bmp[3] > 10) {
+															isHit = true;
+															if (debug) console.log(`[Overlay] capturePage hit (${relX},${relY}) a=${bmp[3]}`);
+														}
+													} catch { /* capturePage failed */ }
 												}
-											} catch { /* capturePage failed */ }
 
-											// Fallback: DOM hit-test via elementFromPoint
-											if (!isHit && !win.isDestroyed() && ignoring) {
-												try {
-													isHit = await win.webContents.executeJavaScript(
-														`(function(){` +
-														`var e=document.elementFromPoint(${relX},${relY});` +
-														`return !!(e&&e!==document.documentElement&&e!==document.body);` +
-														`})()`
-													);
-													if (isHit && debug) console.log(`[Overlay] elementFromPoint hit (${relX},${relY})`);
-												} catch { /* ignore */ }
-											}
+												if (!isHit && !win.isDestroyed()) {
+													try {
+														isHit = await domHitTest(relX, relY);
+														if (isHit && debug) console.log(`[Overlay] DOM hit (${relX},${relY})`);
+													} catch { /* ignore */ }
+												}
 
 											if (!win.isDestroyed() && ignoring && isHit) {
-												if (debug) console.log(`[Overlay] making interactive`);
+												if (debug) console.log('[Overlay] making interactive');
 												origSetIgnore(false);
 												ignoring = false;
-												// X11: after restoring input shape, X server
-												// doesn't send EnterNotify because cursor is
-												// already inside the window area. Force re-raise
-												// and nudge cursor to trigger event delivery.
+												missCount = 0;
 												if (!_isWayland) {
 													win.moveTop();
-													execFile('xdotool', [
-														'mousemove', '--screen', '0',
-														String(cursor.x), String(cursor.y)
-													], { timeout: 500 }, () => {});
+													execFile('xdotool', ['mousemove_relative', '--', '1', '0'], { timeout: 500 }, () => {
+														execFile('xdotool', ['mousemove_relative', '--', '-1', '0'], { timeout: 500 }, () => {});
+													});
+												}
+											} else if (!win.isDestroyed() && !ignoring) {
+												if (!isHit) {
+													missCount += 1;
+													if (missCount >= 2) {
+														if (debug) console.log('[Overlay] transparent area inside bounds - click-through');
+														origSetIgnore(true);
+														ignoring = true;
+														missCount = 0;
+													}
+												} else {
+													missCount = 0;
 												}
 											}
-										} else if (!ignoring && !inside) {
-											if (debug) console.log('[Overlay] cursor left bounds \u2014 click-through');
+										} else if (!ignoring) {
+											if (debug) console.log('[Overlay] cursor left bounds - click-through');
 											origSetIgnore(true);
 											ignoring = true;
+											missCount = 0;
 										}
 									}
 								} catch (e) {
@@ -346,7 +378,6 @@ Module.prototype.require = function(id) {
 									polling = false;
 								}
 							}
-
 							function startPolling() {
 								if (polling) return;
 								polling = true;
