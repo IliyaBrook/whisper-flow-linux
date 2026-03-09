@@ -634,12 +634,16 @@ Module.prototype.require = function(id) {
 							};
 
 							// Intercept show()/showInactive(): NEVER let original be visible.
-							// Show clones instead.
-							const origShow = win.show.bind(win);
+							// Original stays permanently hidden; only clones are shown.
 							const origHide = win.hide.bind(win);
 							let firstShowDone = false;
+							let virtualVisible = false;
+
+							// Override isVisible() so app logic thinks the overlay is shown
+							win.isVisible = () => virtualVisible;
 
 							win.show = function() {
+								virtualVisible = true;
 								if (!firstShowDone) {
 									firstShowDone = true;
 									if (!baseBounds) {
@@ -648,12 +652,12 @@ Module.prototype.require = function(id) {
 										if (b.x > -9000) baseBounds = { ...b };
 									}
 									hideOriginal();
-									origShow();
+									// Do NOT call origShow() — original stays truly hidden.
+									// webContents renders off-screen; clones display the content.
 									// Create clones after brief delay for content to load
 									setTimeout(() => syncClonesForOverlay(overlayRef), 500);
 								} else {
 									hideOriginal();
-									origShow();
 								}
 								for (const c of cloneWindows) {
 									if (c.sourceWin === win && !c.win.isDestroyed()) c.win.show();
@@ -663,6 +667,7 @@ Module.prototype.require = function(id) {
 							win.showInactive = function() { win.show(); };
 
 							win.hide = function() {
+								virtualVisible = false;
 								origHide();
 								for (const c of cloneWindows) {
 									if (c.sourceWin === win && !c.win.isDestroyed()) c.win.hide();
