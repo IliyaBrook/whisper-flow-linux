@@ -1,16 +1,20 @@
-DEB := $(wildcard dist/wispr-flow_*.deb)
-APPIMAGE := $(wildcard dist/Wispr_Flow-*-x86_64.AppImage)
+DEB := $(firstword $(wildcard dist/wispr-flow_*.deb))
+APPIMAGE := $(firstword $(wildcard dist/Wispr_Flow-*-x86_64.AppImage))
 
 .PHONY: build build-deb build-appimage rebuild download extract patch rebuild-native \
-        test run run-debug clean install uninstall
+        test run run-debug clean install uninstall check-runtime-deps
 
 build: build-deb
 
 build-deb: download extract patch rebuild-native
 	yarn run package-deb
 
-build-appimage: download extract patch rebuild-native
+build-appimage: check-runtime-deps download extract patch rebuild-native
 	yarn run package-appimage
+
+check-runtime-deps:
+	chmod +x scripts/runtime-deps.sh
+	./scripts/runtime-deps.sh check
 
 # Full rebuild after code changes (scripts/ or linux-helper/).
 # Re-extracts clean bundle, re-applies patches, repackages AppImage.
@@ -60,10 +64,12 @@ endif
 
 install:
 ifndef DEB
-	$(error No .deb found. Run 'make build' first)
+ifndef APPIMAGE
+	$(error No build found. Run 'make build' or 'make build-appimage' first)
 endif
-	sudo dpkg -i $(DEB)
-	sudo apt-get install -f -y
+endif
+	chmod +x scripts/install-deb.sh
+	./scripts/install-deb.sh "$(DEB)" "$(APPIMAGE)"
 
 uninstall:
 	sudo dpkg -r wispr-flow

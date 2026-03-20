@@ -377,7 +377,8 @@ function main() {
   const debFile = buildDeb(appDir, metadata);
 
   console.log('\n=== Packaging complete ===');
-  console.log(`\nInstall with: sudo dpkg -i ${debFile}`);
+  console.log('\nInstall with: make install');
+  console.log(`Manual install: sudo dpkg -i ${debFile}`);
   console.log('Then run: wispr-flow');
 }
 

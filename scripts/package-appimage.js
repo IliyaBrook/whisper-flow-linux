@@ -14,6 +14,7 @@ const ASAR_DIR = path.join(APP_DIR, 'asar-content');
 const BUILD_DIR = path.join(__dirname, '..', 'build');
 const DIST_DIR = path.join(__dirname, '..', 'dist');
 const LAUNCHER_SH = path.join(__dirname, 'launcher-common.sh');
+const RUNTIME_DEPS_SH = path.join(__dirname, 'runtime-deps.sh');
 
 function getMetadata() {
   const metaPath = path.join(APP_DIR, 'metadata.json');
@@ -31,6 +32,11 @@ function ensureAppImageTool() {
   execSync(`curl -L -o "${toolPath}" "${url}" --progress-bar --max-time 120`, { stdio: 'inherit' });
   execSync(`chmod +x "${toolPath}"`, { stdio: 'pipe' });
   return toolPath;
+}
+
+function ensureRuntimeDependencies() {
+  console.log('Checking runtime dependencies...');
+  execSync(`bash "${RUNTIME_DEPS_SH}" check`, { stdio: 'inherit' });
 }
 
 function assembleApp(metadata) {
@@ -237,6 +243,8 @@ MimeType=x-scheme-handler/wispr-flow;
 
 function main() {
   console.log('=== Packaging Wispr Flow as AppImage ===\n');
+  ensureRuntimeDependencies();
+  console.log('');
 
   const metadata = getMetadata();
   console.log(`App version: ${metadata.appVersion}\n`);

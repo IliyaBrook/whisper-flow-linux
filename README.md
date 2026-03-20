@@ -79,14 +79,28 @@ sudo apt install make git dpkg
 sudo dnf install make git dpkg
 ```
 
-**Runtime dependencies (X11):**
+Required runtime dependencies for the packaged app:
+
+**Debian / Ubuntu**
 ```bash
-sudo apt install xdotool xclip libgtk-3-0 libnss3 libxss1 libxtst6 libatspi2.0-0
+sudo apt install libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 xdg-utils libatspi2.0-0 libsecret-1-0 xdotool xclip
 ```
 
-**Runtime dependencies (Wayland):**
+**Fedora / RHEL**
+```bash
+sudo dnf install gtk3 libnotify nss libXScrnSaver libXtst xdg-utils at-spi2-core libsecret xdotool xclip
+```
+
+Optional native Wayland helper tools (`WISPR_USE_WAYLAND=1`):
+
+**Debian / Ubuntu**
 ```bash
 sudo apt install wl-clipboard ydotool
+```
+
+**Fedora / RHEL**
+```bash
+sudo dnf install wl-clipboard ydotool
 ```
 
 #### Build Steps
@@ -114,11 +128,17 @@ make build
 
 `make build` requires `dpkg-deb` to be installed. If you do not want to install `dpkg`, use `make build-appimage` instead.
 
+`make build-appimage` now checks the runtime dependencies required to actually run Wispr Flow and stops early with the correct `apt` or `dnf` install command if they are missing. Native Wayland helper tools are checked only when `WISPR_USE_WAYLAND=1`.
+
 #### Install .deb Package
 
 ```bash
 make install
 ```
+
+`make install` automatically installs the required runtime dependencies on Debian/Ubuntu before running `dpkg -i`.
+
+On Fedora/RHEL, `make install` installs the runtime dependencies and then points you to the AppImage artifact, which is the supported runtime format there.
 
 #### Run
 
