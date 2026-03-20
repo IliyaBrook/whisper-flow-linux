@@ -5,7 +5,7 @@
  * and creates a .deb package.
  */
 
-const { execSync } = require('child_process');
+const { execSync, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
@@ -15,6 +15,81 @@ const ASAR_DIR = path.join(APP_DIR, 'asar-content');
 const DIST_DIR = path.join(__dirname, '..', 'dist');
 const BUILD_DIR = path.join(__dirname, '..', 'build');
 const LAUNCHER_SH = path.join(__dirname, 'launcher-common.sh');
+
+function commandExists(command) {
+  return spawnSync('/bin/sh', ['-c', `command -v "${command}" >/dev/null 2>&1`], {
+    stdio: 'ignore'
+  }).status === 0;
+}
+
+function parseOsRelease() {
+  const osReleasePath = '/etc/os-release';
+  if (!fs.existsSync(osReleasePath)) {
+    return {};
+  }
+
+  const fields = {};
+  for (const line of fs.readFileSync(osReleasePath, 'utf8').split('\n')) {
+    const match = line.match(/^([A-Z_]+)=(.*)$/);
+    if (!match) {
+      continue;
+    }
+
+    const [, key, rawValue] = match;
+    fields[key] = rawValue.replace(/^"/, '').replace(/"$/, '');
+  }
+
+  return fields;
+}
+
+function detectPackageManager() {
+  const osRelease = parseOsRelease();
+  const distroInfo = `${osRelease.ID || ''} ${osRelease.ID_LIKE || ''}`.toLowerCase();
+
+  if (/\b(debian|ubuntu|linuxmint|pop|neon)\b/.test(distroInfo)) {
+    return 'apt';
+  }
+
+  if (/\b(fedora|rhel|centos|rocky|almalinux)\b/.test(distroInfo)) {
+    return 'dnf';
+  }
+
+  if (commandExists('apt')) {
+    return 'apt';
+  }
+
+  if (commandExists('dnf')) {
+    return 'dnf';
+  }
+
+  return null;
+}
+
+function getDpkgInstallCommand() {
+  const packageManager = detectPackageManager();
+
+  if (packageManager === 'apt') {
+    return 'sudo apt install dpkg';
+  }
+
+  if (packageManager === 'dnf') {
+    return 'sudo dnf install dpkg';
+  }
+
+  return 'Install the `dpkg` package with your distribution package manager.';
+}
+
+function ensureDpkgDebInstalled() {
+  if (commandExists('dpkg-deb')) {
+    return;
+  }
+
+  console.error('\nMissing required system dependency: dpkg-deb');
+  console.error('Building a .deb package requires the `dpkg` package to be installed.');
+  console.error(`Install it with: ${getDpkgInstallCommand()}`);
+  console.error('If you only need a portable build, run: make build-appimage');
+  process.exit(1);
+}
 
 function getMetadata() {
   const metaPath = path.join(APP_DIR, 'metadata.json');
@@ -282,6 +357,7 @@ echo "For Wayland: wl-clipboard, ydotool (install: sudo apt install wl-clipboard
 
 function main() {
   console.log('=== Packaging Wispr Flow for Linux (.deb) ===\n');
+  ensureDpkgDebInstalled();
 
   if (!fs.existsSync(ASAR_DIR)) {
     console.error('App not extracted. Run the extract and patch steps first.');

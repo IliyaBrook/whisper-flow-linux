@@ -57,8 +57,27 @@ chmod +x Wispr_Flow-*-x86_64.AppImage
 #### Prerequisites
 
 - **Node.js** (v18+)
-- **yarn** package manager
+- **yarn** package manager, enabled with `corepack enable`
 - **Build tools**: `make`, `git`
+- **For `.deb` builds**: `dpkg` (`dpkg-deb`)
+
+Enable Yarn via Corepack before installing dependencies:
+
+```bash
+corepack enable
+```
+
+Install base build tools and the `.deb` packager:
+
+**Debian / Ubuntu**
+```bash
+sudo apt install make git dpkg
+```
+
+**Fedora / RHEL**
+```bash
+sudo dnf install make git dpkg
+```
 
 **Runtime dependencies (X11):**
 ```bash
@@ -77,6 +96,9 @@ sudo apt install wl-clipboard ydotool
 git clone https://github.com/IliyaBrook/whisper-flow-linux.git
 cd whisper-flow-linux
 
+# Enable Yarn via Corepack
+corepack enable
+
 # Install project dependencies
 yarn install
 
@@ -89,6 +111,8 @@ make build-appimage
 # Or build .deb package
 make build
 ```
+
+`make build` requires `dpkg-deb` to be installed. If you do not want to install `dpkg`, use `make build-appimage` instead.
 
 #### Install .deb Package
 
