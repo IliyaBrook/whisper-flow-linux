@@ -5,12 +5,19 @@
  */
 
 // We need to mock child_process before requiring the module
-let mockExecSync;
-let mockExecAsync;
+let mockExecSync = jest.fn();
+let mockExecAsync = jest.fn();
+let mockExec = jest.fn();
 
 jest.mock('child_process', () => {
   mockExecSync = jest.fn();
-  const mockExec = jest.fn();
+  mockExec = jest.fn((cmd, options, callback) => {
+    if (typeof options === 'function') {
+      callback = options;
+    }
+    if (callback) callback(null, '', '');
+    return { stdin: { write: jest.fn(), end: jest.fn() } };
+  });
   return {
     execSync: mockExecSync,
     exec: mockExec,
@@ -19,10 +26,7 @@ jest.mock('child_process', () => {
 
 // Mock util.promisify to return our mock
 jest.mock('util', () => ({
-  promisify: (fn) => {
-    mockExecAsync = jest.fn();
-    return mockExecAsync;
-  },
+  promisify: () => mockExecAsync,
 }));
 
 // ============================================================
@@ -343,5 +347,97 @@ describe('Paste strategy logic', () => {
     return pasteTextLogic('test').then(() => {
       expect(operations).not.toContain('restoreClipboard');
     });
+  });
+});
+
+describe('Wayland/XWayland backend behavior', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    jest.resetModules();
+    mockExecSync.mockReset();
+    if (mockExecAsync) mockExecAsync.mockReset();
+    mockExec.mockClear();
+  });
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+    jest.resetModules();
+  });
+
+  function mockInstalledCommands(installed) {
+    mockExecSync.mockImplementation((cmd) => {
+      const match = cmd.match(/^which\s+(.+)$/);
+      const command = match ? match[1] : '';
+      if (installed.includes(command)) {
+        return '/usr/bin/mock';
+      }
+      throw new Error(`missing command: ${command}`);
+    });
+  }
+
+  test('Wayland session with XWayland override uses xdotool for paste', async () => {
+    process.env.XDG_SESSION_TYPE = 'wayland';
+    process.env.WAYLAND_DISPLAY = 'wayland-0';
+    process.env.WISPR_DISPLAY_BACKEND = 'x11';
+
+    mockInstalledCommands(['xdotool', 'xclip']);
+    mockExecAsync.mockResolvedValue({ stdout: '' });
+
+    const x11 = require('../linux-helper/src/x11-utils');
+    await x11.pasteText('hello');
+
+    expect(mockExec).toHaveBeenCalledWith(
+      'xclip -selection clipboard',
+      { timeout: 2000 },
+      expect.any(Function)
+    );
+    expect(mockExecAsync).toHaveBeenCalledWith(
+      'xdotool key --clearmodifiers ctrl+v',
+      { timeout: 2000 }
+    );
+    expect(mockExecAsync).not.toHaveBeenCalledWith(
+      expect.stringContaining('uinput-ctrl-v.py'),
+      expect.anything()
+    );
+  });
+
+  test('native Wayland backend uses uinput for paste', async () => {
+    process.env.XDG_SESSION_TYPE = 'wayland';
+    process.env.WAYLAND_DISPLAY = 'wayland-0';
+    delete process.env.WISPR_DISPLAY_BACKEND;
+
+    mockInstalledCommands(['wl-copy']);
+    mockExecAsync.mockResolvedValue({ stdout: '' });
+
+    const x11 = require('../linux-helper/src/x11-utils');
+    await x11.pasteText('hello');
+
+    expect(mockExec).toHaveBeenCalledWith(
+      'wl-copy',
+      { timeout: 2000 },
+      expect.any(Function)
+    );
+    expect(mockExecAsync).toHaveBeenCalledWith(
+      expect.stringContaining('uinput-ctrl-v.py'),
+      { timeout: 3000 }
+    );
+  });
+
+  test('Wayland session with XWayland override restores focus with xdotool', async () => {
+    process.env.XDG_SESSION_TYPE = 'wayland';
+    process.env.WAYLAND_DISPLAY = 'wayland-0';
+    process.env.WISPR_DISPLAY_BACKEND = 'x11';
+
+    mockInstalledCommands(['xdotool']);
+    mockExecAsync.mockResolvedValue({ stdout: '12345\n' });
+
+    const x11 = require('../linux-helper/src/x11-utils');
+    await x11.storeFocusedWindow();
+    await x11.focusStoredWindow();
+
+    expect(mockExecAsync).toHaveBeenCalledWith('xdotool getactivewindow', { timeout: 2000 });
+    expect(mockExecAsync).toHaveBeenCalledWith('xdotool windowactivate --sync 12345', { timeout: 1000 });
   });
 });

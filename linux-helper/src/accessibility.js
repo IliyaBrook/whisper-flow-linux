@@ -13,6 +13,111 @@ const fs = require('fs');
 
 const execAsync = promisify(exec);
 
+const PYTHON_ACCESSIBILITY_COMMON = `
+import json
+import gi
+gi.require_version('Atspi', '2.0')
+from gi.repository import Atspi
+
+TEXT_ROLES = {
+    Atspi.Role.TEXT,
+    Atspi.Role.ENTRY,
+    Atspi.Role.PASSWORD_TEXT,
+    Atspi.Role.TERMINAL,
+    Atspi.Role.DOCUMENT_TEXT,
+    Atspi.Role.PARAGRAPH,
+}
+
+def safe_state(node):
+    try:
+        return node.get_state_set()
+    except Exception:
+        return None
+
+def has_state(node, state_type):
+    state_set = safe_state(node)
+    return bool(state_set and state_set.contains(state_type))
+
+def has_text_capability(node):
+    try:
+        return bool(node.get_text_iface() or node.get_editable_text_iface())
+    except Exception:
+        return False
+
+def is_editable_text_candidate(node):
+    if node is None:
+        return False
+    try:
+        role = node.get_role()
+    except Exception:
+        role = None
+
+    editable = has_state(node, Atspi.StateType.EDITABLE)
+    if not editable:
+        return False
+
+    return has_text_capability(node) or role in TEXT_ROLES
+
+def walk_children(node, depth=0, max_depth=40):
+    if node is None or depth > max_depth:
+        return
+    yield node
+    try:
+        child_count = node.get_child_count()
+    except Exception:
+        child_count = 0
+
+    for i in range(child_count):
+        try:
+            child = node.get_child_at_index(i)
+        except Exception:
+            child = None
+        if child:
+            yield from walk_children(child, depth + 1, max_depth)
+
+def find_focused_node(node):
+    for candidate in walk_children(node):
+        if has_state(candidate, Atspi.StateType.FOCUSED):
+            return candidate
+    return None
+
+def editable_ancestors(node, max_depth=20):
+    current = node
+    depth = 0
+    while current is not None and depth < max_depth:
+        yield current
+        try:
+            current = current.get_parent()
+        except Exception:
+            current = None
+        depth += 1
+
+def resolve_target():
+    desktop = Atspi.get_desktop(0)
+    focused_node = None
+
+    for i in range(desktop.get_child_count()):
+        app = desktop.get_child_at_index(i)
+        if app is None:
+            continue
+        focused_node = find_focused_node(app)
+        if focused_node:
+            break
+
+    if focused_node is None:
+        return None
+
+    for candidate in editable_ancestors(focused_node):
+        if is_editable_text_candidate(candidate):
+            return candidate
+
+    for candidate in walk_children(focused_node):
+        if is_editable_text_candidate(candidate):
+            return candidate
+
+    return None
+`;
+
 /**
  * Check if AT-SPI2 is available and working
  */
@@ -53,13 +158,10 @@ async function getTextBoxInfo() {
 
   try {
     const pythonScript = `
-import sys, json
-try:
-    import gi
-    gi.require_version('Atspi', '2.0')
-    from gi.repository import Atspi
+import sys
+${PYTHON_ACCESSIBILITY_COMMON}
 
-    desktop = Atspi.get_desktop(0)
+try:
     result = {
         "accessibilityIsFunctioning": True,
         "beforeText": "",
@@ -71,41 +173,31 @@ try:
         "focusedElementHash": None,
     }
 
-    # Walk through applications to find focused element
-    for i in range(desktop.get_child_count()):
-        app = desktop.get_child_at_index(i)
-        if app is None:
-            continue
-        focused = find_focused(app)
-        if focused:
-            result["couldNotGetTextBoxInfo"] = False
-            role = focused.get_role()
+    target = resolve_target()
+    if target is None:
+        print(json.dumps(result))
+        sys.exit(0)
 
-            # Check if editable
-            state_set = focused.get_state_set()
-            result["isEditable"] = state_set.contains(Atspi.StateType.EDITABLE)
+    result["couldNotGetTextBoxInfo"] = False
+    result["isEditable"] = has_state(target, Atspi.StateType.EDITABLE)
+    result["focusedElementHash"] = str(hash(target))
 
-            # Get text interface
-            text_iface = focused.get_text_iface()
-            if text_iface:
-                char_count = text_iface.get_character_count()
-                caret_pos = text_iface.get_caret_offset()
-                full_text = text_iface.get_text(0, char_count)
+    text_iface = target.get_text_iface()
+    if text_iface:
+        char_count = text_iface.get_character_count()
+        caret_pos = text_iface.get_caret_offset()
+        full_text = text_iface.get_text(0, char_count) or ""
 
-                result["contents"] = full_text or ""
-                if caret_pos >= 0:
-                    result["beforeText"] = full_text[:caret_pos] if full_text else ""
-                    result["afterText"] = full_text[caret_pos:] if full_text else ""
+        result["contents"] = full_text
+        if caret_pos >= 0:
+            result["beforeText"] = full_text[:caret_pos]
+            result["afterText"] = full_text[caret_pos:]
 
-                # Get selection
-                n_selections = text_iface.get_n_selections()
-                if n_selections > 0:
-                    sel = text_iface.get_selection(0)
-                    if sel:
-                        result["selectedText"] = full_text[sel.start_offset:sel.end_offset] if full_text else ""
-
-                result["focusedElementHash"] = str(hash(focused))
-            break
+        n_selections = text_iface.get_n_selections()
+        if n_selections > 0:
+            sel = text_iface.get_selection(0)
+            if sel:
+                result["selectedText"] = full_text[sel.start_offset:sel.end_offset]
 
     print(json.dumps(result))
 except Exception as e:
@@ -120,23 +212,6 @@ except Exception as e:
         "focusedElementHash": None,
         "error": str(e)
     }))
-
-def find_focused(node, depth=0):
-    if depth > 30:
-        return None
-    try:
-        state_set = node.get_state_set()
-        if state_set.contains(Atspi.StateType.FOCUSED):
-            return node
-        for i in range(node.get_child_count()):
-            child = node.get_child_at_index(i)
-            if child:
-                found = find_focused(child, depth + 1)
-                if found:
-                    return found
-    except:
-        pass
-    return None
 `;
 
     const { stdout } = await execAsync(
@@ -149,6 +224,60 @@ def find_focused(node, depth=0):
   } catch (err) {
     console.error(`getTextBoxInfo error: ${err.message}`);
     return defaultResult;
+  }
+}
+
+async function insertTextAtCursor(text) {
+  try {
+    const pythonScript = `
+import sys
+${PYTHON_ACCESSIBILITY_COMMON}
+
+try:
+    text_to_insert = ${JSON.stringify(text)}
+    target = resolve_target()
+
+    if target is None:
+        print(json.dumps({"success": False, "reason": "no_target"}))
+        sys.exit(0)
+
+    editable = target.get_editable_text_iface()
+    text_iface = target.get_text_iface()
+
+    if not editable or not text_iface:
+        print(json.dumps({"success": False, "reason": "missing_editable_text_iface"}))
+        sys.exit(0)
+
+    insert_pos = text_iface.get_caret_offset()
+    if insert_pos is None or insert_pos < 0:
+        insert_pos = text_iface.get_character_count()
+
+    try:
+        n_selections = text_iface.get_n_selections()
+    except Exception:
+        n_selections = 0
+
+    if n_selections > 0:
+        selection = text_iface.get_selection(0)
+        if selection and selection.start_offset != selection.end_offset:
+            editable.delete_text(selection.start_offset, selection.end_offset)
+            insert_pos = selection.start_offset
+
+    success = editable.insert_text(insert_pos, text_to_insert, len(text_to_insert))
+    print(json.dumps({"success": bool(success), "reason": "ok" if success else "insert_failed"}))
+except Exception as e:
+    print(json.dumps({"success": False, "reason": str(e)}))
+`;
+
+    const { stdout } = await execAsync(
+      `python3 -c ${escapeShellArg(pythonScript)}`,
+      { timeout: 5000 }
+    );
+
+    return JSON.parse(stdout.trim());
+  } catch (err) {
+    console.error(`insertTextAtCursor error: ${err.message}`);
+    return { success: false, reason: err.message };
   }
 }
 
@@ -219,4 +348,5 @@ module.exports = {
   checkAccessibility,
   getTextBoxInfo,
   getAppContext,
+  insertTextAtCursor,
 };

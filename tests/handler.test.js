@@ -79,9 +79,8 @@ describe('Handler: lifecycle commands', () => {
 
     expect(handler.ready).toBe(true);
     expect(ipc.sendACK).toHaveBeenCalledWith('u1');
-    expect(ipc.sendRequest).toHaveBeenCalledWith(
-      expect.objectContaining({ IsReady: true })
-    );
+    expect(handler.shortcutManager.setIPC).toHaveBeenCalledWith(ipc);
+    expect(handler.shortcutManager.start).toHaveBeenCalled();
   });
 
   test('HelperAppShutdown sends ACK', async () => {

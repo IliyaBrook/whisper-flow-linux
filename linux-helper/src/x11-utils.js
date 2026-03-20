@@ -6,6 +6,7 @@
 const { execSync, exec } = require('child_process');
 const { promisify } = require('util');
 const execAsync = promisify(exec);
+const accessibility = require('./accessibility');
 
 /**
  * Detect display server (X11 or Wayland)
@@ -32,6 +33,10 @@ const displayServer = getDisplayServer();
 function isRealWayland() {
   const xdg = process.env.XDG_SESSION_TYPE || '';
   return xdg === 'wayland' || !!process.env.WAYLAND_DISPLAY;
+}
+
+function isNativeWaylandBackend() {
+  return displayServer === 'wayland';
 }
 
 // Path to the uinput Ctrl+V script
@@ -271,19 +276,39 @@ async function pasteText(text, htmlText) {
   let success = false;
 
   try {
+    const directInsert = await accessibility.insertTextAtCursor(text);
+    if (directInsert.success) {
+      success = true;
+      const elapsed = Date.now() - startTime;
+      console.log(`[PASTE] direct AT-SPI insert succeeded, ${text?.length || 0} chars, ${elapsed}ms`);
+      return { success, timeElapsedMs: elapsed };
+    }
+
+    console.log(`[PASTE] direct AT-SPI insert unavailable: ${directInsert.reason}`);
+
     // Set clipboard content (Electron already saves/restores clipboard itself)
     await setClipboard(text);
 
     // Wait for X server to register the clipboard ownership
     await sleep(80);
 
-    // Simulate Ctrl+V on the currently focused window
-    // On real Wayland: use uinput (kernel-level, works for all windows)
-    // On X11: use xdotool (works for all X11 windows)
-    if (isRealWayland()) {
-      await execAsync(`python3 "${UINPUT_SCRIPT}"`, { timeout: 3000 });
-    } else if (displayServer === 'x11' && tools.xdotool) {
+    // Simulate Ctrl+V on the currently focused window.
+    // Respect the helper backend override:
+    // - X11/XWayland mode uses xdotool
+    // - native Wayland mode uses uinput
+    if (displayServer === 'x11' && tools.xdotool) {
       await execAsync('xdotool key --clearmodifiers ctrl+v', { timeout: 2000 });
+    } else if (isNativeWaylandBackend()) {
+      try {
+        await execAsync(`python3 "${UINPUT_SCRIPT}"`, { timeout: 3000 });
+      } catch (uinputError) {
+        console.error(`[PASTE] uinput Ctrl+V failed: ${uinputError.message}`);
+        if (tools.ydotool) {
+          await execAsync('ydotool key 29:1 47:1 47:0 29:0', { timeout: 3000 });
+        } else {
+          throw uinputError;
+        }
+      }
     } else {
       await simulateKeyCombo(['ctrl', 'v']);
     }
@@ -408,9 +433,9 @@ async function storeFocusedWindow() {
  */
 async function focusStoredWindow() {
   if (!storedWindowId) return;
-  // On real Wayland, apps can't steal focus — the compositor manages it.
-  // The original window should still be focused, so skip xdotool.
-  if (isRealWayland()) return;
+  // In native Wayland mode, apps can't steal focus — the compositor manages it.
+  // In XWayland mode we still want xdotool-based focus restore.
+  if (isNativeWaylandBackend()) return;
   try {
     if (displayServer === 'x11' && tools.xdotool) {
       await execAsync(`xdotool windowactivate --sync ${storedWindowId}`, { timeout: 1000 });
