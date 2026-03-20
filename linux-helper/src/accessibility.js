@@ -1,6 +1,6 @@
 /**
  * Accessibility (AT-SPI2) integration for Linux Helper
- * Provides text field monitoring, context extraction, and text manipulation
+ * Provides text field monitoring and context extraction
  * via the Linux AT-SPI2 accessibility framework.
  *
  * AT-SPI2 is accessed via D-Bus. We use the `dbus-send` CLI tool or
@@ -227,60 +227,6 @@ except Exception as e:
   }
 }
 
-async function insertTextAtCursor(text) {
-  try {
-    const pythonScript = `
-import sys
-${PYTHON_ACCESSIBILITY_COMMON}
-
-try:
-    text_to_insert = ${JSON.stringify(text)}
-    target = resolve_target()
-
-    if target is None:
-        print(json.dumps({"success": False, "reason": "no_target"}))
-        sys.exit(0)
-
-    editable = target.get_editable_text_iface()
-    text_iface = target.get_text_iface()
-
-    if not editable or not text_iface:
-        print(json.dumps({"success": False, "reason": "missing_editable_text_iface"}))
-        sys.exit(0)
-
-    insert_pos = text_iface.get_caret_offset()
-    if insert_pos is None or insert_pos < 0:
-        insert_pos = text_iface.get_character_count()
-
-    try:
-        n_selections = text_iface.get_n_selections()
-    except Exception:
-        n_selections = 0
-
-    if n_selections > 0:
-        selection = text_iface.get_selection(0)
-        if selection and selection.start_offset != selection.end_offset:
-            editable.delete_text(selection.start_offset, selection.end_offset)
-            insert_pos = selection.start_offset
-
-    success = editable.insert_text(insert_pos, text_to_insert, len(text_to_insert))
-    print(json.dumps({"success": bool(success), "reason": "ok" if success else "insert_failed"}))
-except Exception as e:
-    print(json.dumps({"success": False, "reason": str(e)}))
-`;
-
-    const { stdout } = await execAsync(
-      `python3 -c ${escapeShellArg(pythonScript)}`,
-      { timeout: 5000 }
-    );
-
-    return JSON.parse(stdout.trim());
-  } catch (err) {
-    console.error(`insertTextAtCursor error: ${err.message}`);
-    return { success: false, reason: err.message };
-  }
-}
-
 /**
  * Get app context - nearest visible text elements
  */
@@ -348,5 +294,4 @@ module.exports = {
   checkAccessibility,
   getTextBoxInfo,
   getAppContext,
-  insertTextAtCursor,
 };

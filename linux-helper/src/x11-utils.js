@@ -6,7 +6,6 @@
 const { execSync, exec } = require('child_process');
 const { promisify } = require('util');
 const execAsync = promisify(exec);
-const accessibility = require('./accessibility');
 
 /**
  * Detect display server (X11 or Wayland)
@@ -276,16 +275,6 @@ async function pasteText(text, htmlText) {
   let success = false;
 
   try {
-    const directInsert = await accessibility.insertTextAtCursor(text);
-    if (directInsert.success) {
-      success = true;
-      const elapsed = Date.now() - startTime;
-      console.log(`[PASTE] direct AT-SPI insert succeeded, ${text?.length || 0} chars, ${elapsed}ms`);
-      return { success, timeElapsedMs: elapsed };
-    }
-
-    console.log(`[PASTE] direct AT-SPI insert unavailable: ${directInsert.reason}`);
-
     // Set clipboard content (Electron already saves/restores clipboard itself)
     await setClipboard(text);
 
