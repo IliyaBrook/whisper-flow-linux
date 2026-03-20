@@ -83,12 +83,12 @@ Required runtime dependencies for the packaged app:
 
 **Debian / Ubuntu**
 ```bash
-sudo apt install libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 xdg-utils libatspi2.0-0 libsecret-1-0 xdotool xclip
+sudo apt install libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 xdg-utils libatspi2.0-0 libsecret-1-0 xinput xdotool xclip
 ```
 
 **Fedora / RHEL**
 ```bash
-sudo dnf install gtk3 libnotify nss libXScrnSaver libXtst xdg-utils at-spi2-core libsecret xdotool xclip
+sudo dnf install gtk3 libnotify nss libXScrnSaver libXtst xdg-utils at-spi2-core libsecret xinput xdotool xclip
 ```
 
 Optional native Wayland helper tools (`WISPR_USE_WAYLAND=1`):
@@ -101,6 +101,12 @@ sudo apt install wl-clipboard ydotool
 **Fedora / RHEL**
 ```bash
 sudo dnf install wl-clipboard ydotool
+```
+
+Wayland global hotkeys may also require access to `/dev/input/event*`. If hotkeys still do not register on Wayland, add your user to the `input` group and reboot:
+
+```bash
+sudo usermod -aG input $USER
 ```
 
 #### Build Steps

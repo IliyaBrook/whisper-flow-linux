@@ -301,7 +301,7 @@ Section: utils
 Priority: optional
 Architecture: amd64
 Installed-Size: ${installedSize}
-Depends: libgtk-3-0 | libgtk-4-1, libnotify4, libnss3, libxss1, libxtst6, xdg-utils, libatspi2.0-0, libsecret-1-0, xdotool, xclip
+Depends: libgtk-3-0 | libgtk-4-1, libnotify4, libnss3, libxss1, libxtst6, xdg-utils, libatspi2.0-0, libsecret-1-0, xinput, xdotool, xclip
 Recommends: libappindicator3-1, gconf2, python3-gi
 Maintainer: Wispr Flow Linux <community@wisprflow.ai>
 Homepage: https://wisprflow.ai

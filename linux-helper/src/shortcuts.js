@@ -11,7 +11,7 @@
  * so we map keycodes to Windows VK codes.
  */
 
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
@@ -19,6 +19,12 @@ const path = require('path');
 const DEBUG_LOG = path.join(require('os').tmpdir(), 'wispr-shortcuts-debug.log');
 function dbg(msg) {
   try { fs.appendFileSync(DEBUG_LOG, `${new Date().toISOString()} ${msg}\n`); } catch(e) {}
+}
+
+function commandExists(command) {
+  return spawnSync('/bin/sh', ['-c', `command -v "${command}" >/dev/null 2>&1`], {
+    stdio: 'ignore'
+  }).status === 0;
 }
 
 // For keyboard monitoring, detect the REAL session type (not the
@@ -34,6 +40,7 @@ function getRealSessionType() {
   return 'unknown';
 }
 const sessionType = getRealSessionType();
+const hasXinput = commandExists('xinput');
 
 // X11 evdev keycode → Windows Virtual Key code
 // Note: evdev keycode = X11 keycode - 8
@@ -131,13 +138,22 @@ class ShortcutManager {
       // fall back to xinput via XWayland
       const evdevStarted = this._startEvdevKeyMonitor();
       if (!evdevStarted) {
-        console.error('[Shortcuts] evdev unavailable on Wayland, falling back to xinput (XWayland). ' +
+        const fallbackMessage = '[Shortcuts] evdev unavailable on Wayland, falling back to xinput (XWayland). ' +
           'Hotkeys will only work when an XWayland window is focused. ' +
-          'To fix: sudo usermod -aG input $USER && reboot');
+          'For full global Wayland capture: sudo usermod -aG input $USER && reboot.';
+        if (!hasXinput) {
+          console.error(`${fallbackMessage} Also install xinput.`);
+          return;
+        }
+        console.error(fallbackMessage);
         this._startXinputKeyMonitor();
       }
     } else {
       // X11: xinput works perfectly
+      if (!hasXinput) {
+        console.error('[Shortcuts] xinput is not installed. Global shortcuts will not work on X11 until xinput is installed.');
+        return;
+      }
       this._startXinputKeyMonitor();
     }
   }
@@ -299,6 +315,10 @@ class ShortcutManager {
   // ============================================================
 
   _startXinputKeyMonitor() {
+    if (!hasXinput) {
+      console.error('[Shortcuts] Cannot start xinput key monitor: xinput is not installed.');
+      return;
+    }
     try {
       this.xinputProcess = spawn('xinput', ['test-xi2', '--root'], {
         stdio: ['ignore', 'pipe', 'ignore']

@@ -17,6 +17,7 @@ APT_RUNTIME_PACKAGES=(
   xdg-utils
   libatspi2.0-0
   libsecret-1-0
+  xinput
   xdotool
   xclip
 )
@@ -35,6 +36,7 @@ DNF_RUNTIME_PACKAGES=(
   xdg-utils
   at-spi2-core
   libsecret
+  xinput
   xdotool
   xclip
 )
