@@ -9,7 +9,6 @@
 
 const { exec } = require('child_process');
 const { promisify } = require('util');
-const fs = require('fs');
 
 const execAsync = promisify(exec);
 
@@ -124,7 +123,7 @@ def resolve_target():
 async function checkAccessibility() {
   try {
     // Check if AT-SPI2 registry is running
-    const { stdout } = await execAsync(
+    await execAsync(
       'dbus-send --session --print-reply --dest=org.a11y.Bus /org/a11y/bus org.freedesktop.DBus.Peer.Ping 2>/dev/null',
       { timeout: 3000 }
     );
@@ -219,8 +218,7 @@ except Exception as e:
       { timeout: 5000 }
     );
 
-    const result = JSON.parse(stdout.trim());
-    return result;
+    return JSON.parse(stdout.trim());
   } catch (err) {
     console.error(`getTextBoxInfo error: ${err.message}`);
     return defaultResult;

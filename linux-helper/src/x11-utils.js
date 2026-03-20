@@ -26,14 +26,6 @@ function getDisplayServer() {
 
 const displayServer = getDisplayServer();
 
-// Real session type (ignoring WISPR_DISPLAY_BACKEND override).
-// Used for key simulation: xdotool only works for XWayland windows,
-// on real Wayland we need uinput/ydotool.
-function isRealWayland() {
-  const xdg = process.env.XDG_SESSION_TYPE || '';
-  return xdg === 'wayland' || !!process.env.WAYLAND_DISPLAY;
-}
-
 function isNativeWaylandBackend() {
   return displayServer === 'wayland';
 }
@@ -88,11 +80,9 @@ async function getActiveWindowInfoX11() {
   const result = { windowId: '', appName: '', pid: 0, title: '', wmClass: '', url: '' };
   try {
     if (tools.xdotool) {
-      const windowId = (await execAsync('xdotool getactivewindow')).stdout.trim();
-      result.windowId = windowId;
+      result.windowId = (await execAsync('xdotool getactivewindow')).stdout.trim();
 
-      const name = (await execAsync(`xdotool getactivewindow getwindowname`)).stdout.trim();
-      result.title = name;
+      result.title = (await execAsync(`xdotool getactivewindow getwindowname`)).stdout.trim();
 
       try {
         const pid = (await execAsync(`xdotool getactivewindow getwindowpid`)).stdout.trim();
@@ -118,8 +108,7 @@ async function getActiveWindowInfoX11() {
     if (result.pid > 0 && !result.appName) {
       try {
         const fs = require('fs');
-        const cmdline = fs.readFileSync(`/proc/${result.pid}/comm`, 'utf8').trim();
-        result.appName = cmdline;
+        result.appName = fs.readFileSync(`/proc/${result.pid}/comm`, 'utf8').trim();
       } catch { /* ignore */ }
     }
   } catch (err) {
@@ -270,7 +259,7 @@ async function setClipboard(text) {
  * Paste text into the focused application
  * Strategy: set clipboard → Ctrl+V targeted at stored window → restore clipboard
  */
-async function pasteText(text, htmlText) {
+async function pasteText(text, _htmlText) {
   const startTime = Date.now();
   let success = false;
 
@@ -287,22 +276,13 @@ async function pasteText(text, htmlText) {
     // - native Wayland mode uses uinput
     if (displayServer === 'x11' && tools.xdotool) {
       await execAsync('xdotool key --clearmodifiers ctrl+v', { timeout: 2000 });
+      success = true;
     } else if (isNativeWaylandBackend()) {
-      try {
-        await execAsync(`python3 "${UINPUT_SCRIPT}"`, { timeout: 3000 });
-      } catch (uinputError) {
-        console.error(`[PASTE] uinput Ctrl+V failed: ${uinputError.message}`);
-        if (tools.ydotool) {
-          await execAsync('ydotool key 29:1 47:1 47:0 29:0', { timeout: 3000 });
-        } else {
-          throw uinputError;
-        }
-      }
+      success = await pasteWithNativeWayland();
     } else {
       await simulateKeyCombo(['ctrl', 'v']);
+      success = true;
     }
-
-    success = true;
   } catch (err) {
     console.error(`[PASTE] error: ${err.message}`);
   }
@@ -320,10 +300,10 @@ async function pasteText(text, htmlText) {
 /**
  * Simulate a key press
  */
-async function simulateKeyPress(keycode, flags) {
+async function simulateKeyPress(keycode, _flags) {
   try {
     if (displayServer === 'x11' && tools.xdotool) {
-      const keyName = keycodeToXdotoolName(keycode, flags);
+      const keyName = keycodeToXdotoolName(keycode);
       if (keyName) {
         await execAsync(`xdotool key ${keyName}`);
       }
@@ -369,7 +349,7 @@ async function simulateKeyCombo(keys) {
  * Map Windows virtual keycodes to xdotool key names
  * See: https://docs.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes
  */
-function keycodeToXdotoolName(keycode, flags) {
+function keycodeToXdotoolName(keycode) {
   const vkMap = {
     0x08: 'BackSpace', 0x09: 'Tab', 0x0D: 'Return', 0x10: 'Shift_L',
     0x11: 'Control_L', 0x12: 'Alt_L', 0x13: 'Pause', 0x14: 'Caps_Lock',
@@ -475,6 +455,20 @@ async function getSelectedTextViaCopy() {
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function pasteWithNativeWayland() {
+  try {
+    await execAsync(`python3 "${UINPUT_SCRIPT}"`, { timeout: 3000 });
+    return true;
+  } catch (uinputError) {
+    console.error(`[PASTE] uinput Ctrl+V failed: ${uinputError.message}`);
+    if (!tools.ydotool) {
+      return false;
+    }
+    await execAsync('ydotool key 29:1 47:1 47:0 29:0', { timeout: 3000 });
+    return true;
+  }
 }
 
 module.exports = {
