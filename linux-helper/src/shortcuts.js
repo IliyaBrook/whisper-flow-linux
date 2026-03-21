@@ -116,7 +116,8 @@ class ShortcutManager {
     this.ipc = null;
     this._currentEventType = null;
     this._usingEvdev = false;
-    this._pressedKeys = new Set(); // Track pressed keys to deduplicate across multiple evdev devices
+    this._usingXinput = false;
+    this._pressedKeys = new Set(); // Track pressed keys to deduplicate across devices/backends
   }
 
   setIPC(ipc) {
@@ -135,9 +136,10 @@ class ShortcutManager {
 
     if (sessionType === 'wayland') {
       // On Wayland, try evdev first (true global capture),
-      // fall back to xinput via XWayland
-      const evdevStarted = this._startEvdevKeyMonitor();
-      if (!evdevStarted) {
+      // use xinput via XWayland as a fallback when evdev is unavailable
+      // or only partially available due to device permissions.
+      const evdevStatus = this._startEvdevKeyMonitor();
+      if (!evdevStatus.started) {
         const fallbackMessage = '[Shortcuts] evdev unavailable on Wayland, falling back to xinput (XWayland). ' +
           'Hotkeys will only work when an XWayland window is focused. ' +
           'For full global Wayland capture: sudo usermod -aG input $USER && reboot.';
@@ -146,6 +148,10 @@ class ShortcutManager {
           return;
         }
         console.error(fallbackMessage);
+        this._startXinputKeyMonitor();
+      } else if (evdevStatus.permissionDenied > 0 && hasXinput) {
+        console.error('[Shortcuts] evdev could not open all keyboard devices on Wayland. ' +
+          'Starting xinput fallback in parallel for XWayland-focused windows.');
         this._startXinputKeyMonitor();
       }
     } else {
@@ -160,6 +166,8 @@ class ShortcutManager {
 
   stop() {
     this.active = false;
+    this._usingEvdev = false;
+    this._usingXinput = false;
     if (this.xinputProcess) {
       this.xinputProcess.kill();
       this.xinputProcess = null;
@@ -177,23 +185,33 @@ class ShortcutManager {
 
   _startEvdevKeyMonitor() {
     const keyboards = this._findKeyboardDevices();
+    const status = {
+      started: false,
+      opened: 0,
+      permissionDenied: 0,
+    };
     if (keyboards.length === 0) {
       console.error('[Shortcuts] No keyboard devices found in /dev/input/');
-      return false;
+      return status;
     }
 
-    let opened = 0;
     for (const device of keyboards) {
-      if (this._openEvdevDevice(device)) opened++;
+      const result = this._openEvdevDevice(device);
+      if (result.opened) {
+        status.opened++;
+      } else if (result.reason === 'permission_denied') {
+        status.permissionDenied++;
+      }
     }
 
-    if (opened > 0) {
+    if (status.opened > 0) {
       this._usingEvdev = true;
-      console.log(`[Shortcuts] evdev: monitoring ${opened} keyboard device(s) on Wayland`);
-      return true;
+      status.started = true;
+      console.log(`[Shortcuts] evdev: monitoring ${status.opened} keyboard device(s) on Wayland`);
+      return status;
     }
     console.error('[Shortcuts] Failed to open any keyboard device');
-    return false;
+    return status;
   }
 
   _findKeyboardDevices() {
@@ -246,7 +264,10 @@ class ShortcutManager {
       dbg(`opened ${devicePath} fd=${fd} (stream)`);
     } catch (err) {
       dbg(`FAILED to open ${devicePath}: ${err.message}`);
-      return false;
+      if (err && err.code === 'EACCES') {
+        return { opened: false, reason: 'permission_denied' };
+      }
+      return { opened: false, reason: 'open_failed' };
     }
 
     const stream = fs.createReadStream(null, {
@@ -273,16 +294,10 @@ class ShortcutManager {
           dbg(`EV_KEY code=${code} value=${value} vkCode=${vkCode} ipc=${!!this.ipc}`);
           if (vkCode !== undefined) {
             if (value === 1) { // press
-              if (!this._pressedKeys.has(vkCode)) {
-                this._pressedKeys.add(vkCode);
-                this._sendKeyEvent('key_event_press', vkCode);
-              }
+              this._forwardKeyState(vkCode, true);
             } else if (value === 2) { // repeat (key held down) — ignore
             } else if (value === 0) { // release
-              if (this._pressedKeys.has(vkCode)) {
-                this._pressedKeys.delete(vkCode);
-                this._sendKeyEvent('key_event_release', vkCode);
-              }
+              this._forwardKeyState(vkCode, false);
             }
           }
         }
@@ -307,7 +322,7 @@ class ShortcutManager {
     });
 
     this.evdevStreams.push(stream);
-    return true;
+    return { opened: true };
   }
 
   // ============================================================
@@ -319,7 +334,11 @@ class ShortcutManager {
       console.error('[Shortcuts] Cannot start xinput key monitor: xinput is not installed.');
       return;
     }
+    if (this.xinputProcess) {
+      return;
+    }
     try {
+      this._usingXinput = true;
       this.xinputProcess = spawn('xinput', ['test-xi2', '--root'], {
         stdio: ['ignore', 'pipe', 'ignore']
       });
@@ -340,7 +359,8 @@ class ShortcutManager {
       });
 
       this.xinputProcess.on('close', (code) => {
-        if (this.active && !this._usingEvdev) {
+        this.xinputProcess = null;
+        if (this.active && this._usingXinput) {
           setTimeout(() => this._startXinputKeyMonitor(), 1000);
         }
       });
@@ -360,7 +380,7 @@ class ShortcutManager {
         const x11Keycode = parseInt(detailMatch[1], 10);
         const vkCode = X11_TO_VK[x11Keycode];
         if (vkCode !== undefined) {
-          this._sendKeyEvent(this._currentEventType, vkCode);
+          this._forwardKeyState(vkCode, this._currentEventType === 'key_event_press');
         }
         this._currentEventType = null;
       }
@@ -370,6 +390,23 @@ class ShortcutManager {
   // ============================================================
   // Common
   // ============================================================
+
+  _forwardKeyState(vkCode, isPressed) {
+    if (isPressed) {
+      if (this._pressedKeys.has(vkCode)) {
+        return;
+      }
+      this._pressedKeys.add(vkCode);
+      this._sendKeyEvent('key_event_press', vkCode);
+      return;
+    }
+
+    if (!this._pressedKeys.has(vkCode)) {
+      return;
+    }
+    this._pressedKeys.delete(vkCode);
+    this._sendKeyEvent('key_event_release', vkCode);
+  }
 
   _sendKeyEvent(eventType, vkCode) {
     if (!this.ipc) {

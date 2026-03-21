@@ -6,56 +6,34 @@
  * Electron sends a sequence of commands that happens during voice typing.
  */
 
-jest.mock('../linux-helper/src/x11-utils', () => ({
-  displayServer: 'x11',
-  tools: { xdotool: true, xclip: true, xprop: true },
-  getActiveWindowInfo: jest.fn(),
-  pasteText: jest.fn(),
-  simulateKeyPress: jest.fn(),
-  simulateKeyCombo: jest.fn(),
-  storeFocusedWindow: jest.fn(),
-  focusStoredWindow: jest.fn(),
-  getSelectedTextViaCopy: jest.fn(),
-  getClipboard: jest.fn(),
-  setClipboard: jest.fn(),
-  sleep: jest.fn().mockResolvedValue(undefined),
-}));
+jest.mock('../linux-helper/src/x11-utils', () => (
+  require('./helpers/linux-helper-test-mocks').createX11UtilsMock()
+));
 
-jest.mock('../linux-helper/src/accessibility', () => ({
-  checkAccessibility: jest.fn().mockResolvedValue(true),
-  getTextBoxInfo: jest.fn(),
-  getAppContext: jest.fn(),
-}));
+jest.mock('../linux-helper/src/accessibility', () => (
+  require('./helpers/linux-helper-test-mocks').createAccessibilityMock({
+    checkAccessibility: jest.fn().mockResolvedValue(true),
+  })
+));
 
-jest.mock('../linux-helper/src/shortcuts', () => ({
-  ShortcutManager: jest.fn().mockImplementation(() => ({
-    setIPC: jest.fn(),
-    start: jest.fn(),
-    stop: jest.fn(),
-    updateShortcuts: jest.fn(),
-    checkStaleKeys: jest.fn().mockResolvedValue([]),
-  })),
-}));
+jest.mock('../linux-helper/src/shortcuts', () => (
+  require('./helpers/linux-helper-test-mocks').createShortcutManagerMock()
+));
 
-jest.mock('../linux-helper/src/hardware', () => ({
-  getHardwareInfo: jest.fn().mockResolvedValue({
-    hasAppleFnKey: false, isClamshellMode: false, connectedMice: [],
-  }),
-}));
+jest.mock('../linux-helper/src/hardware', () => (
+  require('./helpers/linux-helper-test-mocks').createHardwareMock({
+    getHardwareInfo: jest.fn().mockResolvedValue({
+      hasAppleFnKey: false, isClamshellMode: false, connectedMice: [],
+    }),
+  })
+));
+
+const { createMockIPC } = require('./helpers/linux-helper-test-mocks');
 
 const { Handler } = require('../linux-helper/src/handler');
 const { IPC, escapeMessage, unescapeMessage } = require('../linux-helper/src/ipc');
 const x11 = require('../linux-helper/src/x11-utils');
 const accessibility = require('../linux-helper/src/accessibility');
-
-function createMockIPC() {
-  return {
-    sendACK: jest.fn(),
-    sendResponse: jest.fn(),
-    sendRequest: jest.fn(),
-    sendError: jest.fn(),
-  };
-}
 
 // ============================================================
 // Full Dictation Flow
