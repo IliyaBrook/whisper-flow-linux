@@ -45,6 +45,12 @@ class Handler {
   }
 
   async _dispatch(command, value, uuid, ipc) {
+    // Log all IPC commands for debugging Command Mode flow
+    const cmdDebugList = ['StoreFocusedAppAndElement', 'GetSelectedTextViaCopy', 'GetTextBoxInfo',
+      'DictationStart', 'DictationStop', 'FocusStoredAppAndElement', 'PasteText', 'GetAppInfo'];
+    if (cmdDebugList.includes(command)) {
+      console.error(`[CMD-DEBUG] >>> IPC command received: ${command}`);
+    }
     switch (command) {
       // ========== Lifecycle ==========
       case 'IsReady':
@@ -145,7 +151,9 @@ class Handler {
       }
 
       case 'GetTextBoxInfo': {
+        console.error(`[CMD-DEBUG] GetTextBoxInfo called`);
         const textBoxInfo = await accessibility.getTextBoxInfo();
+        console.error(`[CMD-DEBUG] GetTextBoxInfo result: accessibility=${textBoxInfo.accessibilityIsFunctioning}, selectedText="${textBoxInfo.selectedText}" (${textBoxInfo.selectedText?.length || 0} chars), isEditable=${textBoxInfo.isEditable}, couldNotGet=${textBoxInfo.couldNotGetTextBoxInfo}`);
         ipc.sendResponse({
           uuid,
           TextBoxInfo: {
@@ -156,11 +164,14 @@ class Handler {
       }
 
       case 'StoreFocusedAppAndElement':
+        console.error(`[CMD-DEBUG] StoreFocusedAppAndElement called`);
         await x11.storeFocusedWindow();
+        console.error(`[CMD-DEBUG] StoreFocusedAppAndElement done, storedWindowId=${x11._getStoredWindowId?.() || 'N/A'}`);
         ipc.sendACK(uuid);
         break;
 
       case 'FocusStoredAppAndElement':
+        console.error(`[CMD-DEBUG] FocusStoredAppAndElement called`);
         await x11.focusStoredWindow();
         ipc.sendACK(uuid);
         break;
@@ -172,11 +183,14 @@ class Handler {
         break;
 
       case 'GetSelectedTextViaCopy': {
+        console.error(`[CMD-DEBUG] GetSelectedTextViaCopy called, storedWindowId=${x11._getStoredWindowId?.() || 'N/A'}`);
         const selectedText = await x11.getSelectedTextViaCopy();
+        console.error(`[CMD-DEBUG] GetSelectedTextViaCopy result: "${selectedText}" (${selectedText.length} chars)`);
         ipc.sendResponse({
           uuid,
           SelectedTextViaCopy: {
             payload: {
+              afterText: '',
               beforeText: '',
               contents: selectedText,
               selectedText: selectedText,
@@ -226,8 +240,10 @@ class Handler {
 
       // ========== Dictation Events ==========
       case 'DictationStart':
+        console.error(`[CMD-DEBUG] DictationStart called`);
         // Store the currently focused window so we can restore focus before pasting
         await x11.storeFocusedWindow();
+        console.error(`[CMD-DEBUG] DictationStart stored window: ${x11._getStoredWindowId?.() || 'N/A'}`);
         ipc.sendACK(uuid);
         break;
 
@@ -324,7 +340,7 @@ class Handler {
         break;
 
       default:
-        console.error(`Unknown command: ${command}`);
+        console.error(`[CMD-DEBUG] Unknown/unhandled command: ${command}`);
         ipc.sendACK(uuid);
         break;
     }

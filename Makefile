@@ -2,7 +2,7 @@ DEB := $(firstword $(wildcard dist/wispr-flow_*.deb))
 APPIMAGE := $(firstword $(wildcard dist/Wispr_Flow-*-x86_64.AppImage))
 
 .PHONY: build build-deb build-appimage rebuild download extract patch rebuild-native \
-        test run run-debug clean install uninstall check-runtime-deps
+        test run run-debug debug-cmd clean install uninstall check-runtime-deps
 
 build: build-deb
 
@@ -60,6 +60,16 @@ ifdef APPIMAGE
 	WISPR_DEBUG=1 ./$(APPIMAGE)
 else
 	WISPR_DEBUG=1 ELECTRON_ENABLE_LOGGING=1 ELECTRON_USE_SYSTEM_TITLE_BAR=1 /opt/wispr-flow/wispr-flow --no-sandbox --disable-features=CustomTitlebar --enable-logging
+endif
+
+# Filtered debug: only show [CMD-DEBUG] lines from the linux-helper.
+# Usage: make debug-cmd  (or  make debug-cmd TAG=PASTE  to filter [PASTE] lines)
+TAG ?= CMD-DEBUG
+debug-cmd:
+ifdef APPIMAGE
+	WISPR_DEBUG=1 ./$(APPIMAGE) 2>&1 | grep --line-buffered "$(TAG)"
+else
+	WISPR_DEBUG=1 /opt/wispr-flow/wispr-flow --no-sandbox 2>&1 | grep --line-buffered "$(TAG)"
 endif
 
 install:
