@@ -473,13 +473,17 @@ async function storeFocusedWindow() {
  * Called at DictationStart when focus is still on the user's window.
  */
 async function _captureSelectedTextNow() {
+  // IMPORTANT: This is called during DictationStart while the user is STILL
+  // HOLDING the Command Mode hotkey. We must NEVER simulate key presses here
+  // (xdotool --clearmodifiers corrupts X11 modifier state and breaks keyboard).
+  // Only read selections passively.
   try {
-    console.error(`[CMD-DEBUG] _captureSelectedTextNow: realSession=${realSessionType}, displayServer=${displayServer}, tools: xclip=${tools.xclip}, xsel=${tools.xsel}, wlPaste=${tools.wlPaste}, ydotool=${tools.ydotool}, xdotool=${tools.xdotool}`);
+    console.error(`[CMD-DEBUG] _captureSelectedTextNow: realSession=${realSessionType}, displayServer=${displayServer}, tools: xclip=${tools.xclip}, xsel=${tools.xsel}, wlPaste=${tools.wlPaste}`);
 
     // Try ALL PRIMARY selection methods regardless of displayServer setting
     // (WISPR_DISPLAY_BACKEND override can mask the real session)
+    // PRIMARY selection is READ-ONLY — safe to call anytime.
 
-    // 1. xclip PRIMARY
     if (tools.xclip) {
       try {
         const { stdout } = await execAsync('xclip -selection primary -o 2>/dev/null || true', { timeout: 2000 });
@@ -488,7 +492,6 @@ async function _captureSelectedTextNow() {
       } catch (e) { console.error(`[CMD-DEBUG] xclip PRIMARY error: ${e.message}`); }
     }
 
-    // 2. xsel PRIMARY
     if (tools.xsel) {
       try {
         const { stdout } = await execAsync('xsel --primary --output 2>/dev/null || true', { timeout: 2000 });
@@ -497,7 +500,6 @@ async function _captureSelectedTextNow() {
       } catch (e) { console.error(`[CMD-DEBUG] xsel PRIMARY error: ${e.message}`); }
     }
 
-    // 3. wl-paste PRIMARY (for native Wayland apps)
     if (tools.wlPaste) {
       try {
         const { stdout } = await execAsync('wl-paste --primary --no-newline 2>/dev/null || true', { timeout: 2000 });
@@ -506,32 +508,14 @@ async function _captureSelectedTextNow() {
       } catch (e) { console.error(`[CMD-DEBUG] wl-paste PRIMARY error: ${e.message}`); }
     }
 
-    // 4. Ctrl+C fallback — try xdotool directly (not simulateKeyCombo which
-    //    may route to ydotool on Wayland sessions)
-    console.error(`[CMD-DEBUG] All PRIMARY methods empty, trying Ctrl+C...`);
-    const savedClipboard = await getClipboard();
-    await setClipboard('');
-    await sleep(30);
+    // Also try reading CLIPBOARD (user might have Ctrl+C'd before pressing hotkey)
+    try {
+      const clip = await getClipboard();
+      console.error(`[CMD-DEBUG] CLIPBOARD: "${(clip || '').substring(0, 80)}" (${(clip || '').length} chars)`);
+      // Don't use clipboard as selected text — it might be stale from a previous copy
+    } catch (e) { /* ignore */ }
 
-    // Try xdotool first (reliable on X11/XWayland)
-    if (tools.xdotool) {
-      try {
-        console.error(`[CMD-DEBUG] Trying xdotool key ctrl+c...`);
-        await execAsync('xdotool key --clearmodifiers ctrl+c', { timeout: 2000 });
-        await sleep(100);
-        const copied = await getClipboard();
-        console.error(`[CMD-DEBUG] Clipboard after xdotool Ctrl+C: "${(copied || '').substring(0, 80)}" (${(copied || '').length} chars)`);
-        if (copied) {
-          if (savedClipboard) await setClipboard(savedClipboard);
-          cachedSelectedText = copied;
-          return;
-        }
-      } catch (e) { console.error(`[CMD-DEBUG] xdotool Ctrl+C error: ${e.message}`); }
-    }
-
-    // Restore clipboard
-    if (savedClipboard) await setClipboard(savedClipboard);
-    console.error(`[CMD-DEBUG] No selected text captured at DictationStart`);
+    console.error(`[CMD-DEBUG] No selected text captured at DictationStart (all PRIMARY methods empty)`);
   } catch (err) {
     console.error(`[CMD-DEBUG] _captureSelectedTextNow error: ${err.message}`);
   }
@@ -616,6 +600,8 @@ async function getSelectedTextViaCopy() {
     }
 
     // Strategy 2: Restore focus + Ctrl+C fallback
+    // IMPORTANT: Use xdotool WITHOUT --clearmodifiers to avoid corrupting
+    // X11 modifier state (which breaks the keyboard if user is holding keys).
     console.error(`[CMD-DEBUG] PRIMARY empty, trying focus restore + Ctrl+C`);
     await focusStoredWindow();
     await sleep(200);
@@ -624,8 +610,18 @@ async function getSelectedTextViaCopy() {
     await setClipboard('');
     await sleep(50);
 
-    console.error(`[CMD-DEBUG] Simulating Ctrl+C...`);
-    await simulateKeyCombo(['ctrl', 'c']);
+    // Use xdotool key WITHOUT --clearmodifiers (safe, won't break keyboard)
+    if (tools.xdotool) {
+      console.error(`[CMD-DEBUG] Simulating Ctrl+C via xdotool (no --clearmodifiers)...`);
+      try {
+        await execAsync('xdotool key ctrl+c', { timeout: 2000 });
+      } catch (e) {
+        console.error(`[CMD-DEBUG] xdotool ctrl+c error: ${e.message}`);
+      }
+    } else {
+      console.error(`[CMD-DEBUG] Simulating Ctrl+C via simulateKeyCombo...`);
+      await simulateKeyCombo(['ctrl', 'c']);
+    }
     await sleep(200);
 
     const selectedText = await getClipboard();
