@@ -47,6 +47,10 @@ function main() {
     console.log(`[dep-check] WARNING: ${w}`);
   }
 
+  for (const cmd of depReport.fixCommands) {
+    console.log(`[dep-check] Fix command: ${cmd}`);
+  }
+
   // Initialize handler and IPC
   const handler = new Handler();
   const ipc = new IPC(handler);
@@ -63,6 +67,7 @@ function main() {
           desktop: depReport.desktop,
           missing: depReport.missing,
           warnings: depReport.warnings,
+          fixCommands: depReport.fixCommands,
           installCommand: depReport.installCommand,
         }
       });

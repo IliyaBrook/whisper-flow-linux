@@ -70,7 +70,11 @@ function detectPackageManager() {
  */
 function isUserInInputGroup() {
   try {
-    const groups = execSync('groups', { stdio: 'pipe', encoding: 'utf8' }).trim();
+    // Use `id -Gn <username>` to check the system group database,
+    // not the current process groups. This way the check is correct
+    // even if the user added themselves to the group without re-logging.
+    const username = require('os').userInfo().username;
+    const groups = execSync(`id -Gn ${username}`, { stdio: 'pipe', encoding: 'utf8' }).trim();
     return groups.split(/\s+/).includes('input');
   } catch {
     return false;
@@ -135,7 +139,7 @@ function getInstallCommand(pkgManager, packages) {
 /**
  * Run full dependency check.
  *
- * @returns {{ ok: boolean, session: string, desktop: string, missing: Array<{tool: string, reason: string}>, warnings: string[], installCommand: string }}
+ * @returns {{ ok: boolean, session: string, desktop: string, missing: Array<{tool: string, reason: string}>, warnings: string[], fixCommands: string[], installCommand: string }}
  */
 function checkDependencies() {
   const session = detectSessionType();
@@ -145,6 +149,7 @@ function checkDependencies() {
   const missing = [];
   const warnings = [];
   const missingPackages = [];
+  const fixCommands = []; // actionable shell commands to fix issues
 
   // --- Common: python3 is needed for uinput Ctrl+V script (primary paste method) ---
   const hasPython3 = commandExists('python3');
@@ -185,11 +190,9 @@ function checkDependencies() {
 
     // Input group check
     if (!isUserInInputGroup()) {
-      warnings.push(
-        'Your user is not in the "input" group. This is required for input simulation and global hotkeys on Wayland.\n' +
-        'Run: sudo usermod -aG input $USER\n' +
-        'Then log out and back in.'
-      );
+      const username = require('os').userInfo().username;
+      warnings.push(`User "${username}" is not in the "input" group. Required for input simulation and global hotkeys on Wayland. Log out and back in after fixing.`);
+      fixCommands.push(`sudo usermod -aG input ${username}`);
     }
   } else {
     warnings.push(`Could not detect display server (XDG_SESSION_TYPE=${process.env.XDG_SESSION_TYPE || ''}, DISPLAY=${process.env.DISPLAY || ''}, WAYLAND_DISPLAY=${process.env.WAYLAND_DISPLAY || ''}). Some features may not work.`);
@@ -205,6 +208,7 @@ function checkDependencies() {
     desktop,
     missing,
     warnings,
+    fixCommands,
     installCommand,
   };
 }

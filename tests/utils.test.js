@@ -440,6 +440,7 @@ describe('Wayland/XWayland backend behavior', () => {
     await x11.focusStoredWindow();
 
     expect(mockExecAsync).toHaveBeenCalledWith('xdotool getactivewindow', { timeout: 2000 });
-    expect(mockExecAsync).toHaveBeenCalledWith('xdotool windowactivate --sync 12345', { timeout: 1000 });
+    expect(mockExecAsync).toHaveBeenCalledWith('xdotool windowactivate --sync 12345', { timeout: 2000 });
+    expect(mockExecAsync).toHaveBeenCalledWith('xdotool windowfocus --sync 12345', { timeout: 2000 });
   });
 });

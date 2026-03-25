@@ -85,6 +85,9 @@ class Handler {
         // Restore focus to the window that was active when dictation started
         // (overlay windows with focusable:true may have stolen focus)
         await x11.focusStoredWindow();
+        // Wait for the window manager to fully transfer focus.
+        // windowactivate + windowfocus with --sync should handle this,
+        // but a small delay ensures the WM has finished processing.
         await x11.sleep(150);
 
         // Perform paste asynchronously

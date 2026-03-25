@@ -468,7 +468,10 @@ async function focusStoredWindow() {
   if (isNativeWaylandBackend()) return;
   try {
     if (displayServer === 'x11' && tools.xdotool) {
-      await execAsync(`xdotool windowactivate --sync ${storedWindowId}`, { timeout: 1000 });
+      // windowactivate + windowfocus for reliable focus restoration
+      await execAsync(`xdotool windowactivate --sync ${storedWindowId}`, { timeout: 2000 });
+      await execAsync(`xdotool windowfocus --sync ${storedWindowId}`, { timeout: 2000 });
+      console.log(`[PASTE] focusStoredWindow: restored focus to ${storedWindowId}`);
     }
   } catch (err) {
     console.error(`[PASTE] focusStoredWindow error: ${err.message}`);

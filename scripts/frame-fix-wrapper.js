@@ -28,6 +28,7 @@ if (process.platform === 'linux') {
       const warningLines = [];
       let installCmd = '';
       let sessionType = '';
+      const fixCommandLines = [];
 
       child.stdout.on('data', (chunk) => {
         buffer += chunk.toString();
@@ -40,7 +41,7 @@ if (process.platform === 'linux') {
             const m = line.match(/Session:\s*(\w+)/);
             if (m) sessionType = m[1];
           }
-          if (line.includes('[dep-check] Missing') || line.includes('[dep-check]   -')) {
+          if (line.includes('[dep-check]   -')) {
             const toolMatch = line.match(/- (\S+): (.+)/);
             if (toolMatch) missingLines.push(`${toolMatch[1]} — ${toolMatch[2]}`);
           }
@@ -49,6 +50,9 @@ if (process.platform === 'linux') {
           }
           if (line.includes('[dep-check] WARNING:')) {
             warningLines.push(line.replace(/.*WARNING:\s*/, ''));
+          }
+          if (line.includes('[dep-check] Fix command:')) {
+            fixCommandLines.push(line.replace(/.*Fix command:\s*/, ''));
           }
         }
       });
@@ -65,9 +69,14 @@ if (process.platform === 'linux') {
 
           const showDepDialog = () => {
             const isCritical = missingLines.length > 0;
-            let message = isCritical
+            const message = isCritical
               ? 'Wispr Flow is missing required dependencies for your system.'
               : 'Wispr Flow detected potential configuration issues.';
+
+            // Build all commands to copy (install + fix commands like usermod)
+            const allCommands = [];
+            if (installCmd) allCommands.push(installCmd);
+            for (const cmd of fixCommandLines) allCommands.push(cmd);
 
             let detail = '';
             if (sessionType) {
@@ -82,27 +91,33 @@ if (process.platform === 'linux') {
 
             if (warningLines.length > 0) {
               detail += 'Warnings:\n';
-              for (const w of warningLines) detail += `  \u2022 ${w}\n`;
+              for (const w of warningLines) {
+                // Clean up multi-line warnings for dialog display
+                detail += `  \u2022 ${w.replace(/\\n/g, '\n    ')}\n`;
+              }
               detail += '\n';
             }
 
-            if (installCmd) {
-              detail += `Install command:\n  ${installCmd}\n`;
+            if (allCommands.length > 0) {
+              detail += 'Run these commands to fix:\n';
+              for (const cmd of allCommands) detail += `  ${cmd}\n`;
             }
 
-            detail += '\nText insertion and other features may not work without these dependencies.';
+            detail += '\nText insertion and other features may not work without these fixes.';
+
+            const copyText = allCommands.join(' && ');
 
             dialog.showMessageBox({
               type: isCritical ? 'error' : 'warning',
-              title: 'Wispr Flow — Missing Dependencies',
+              title: 'Wispr Flow \u2014 Missing Dependencies',
               message,
               detail,
-              buttons: installCmd ? ['Copy Install Command', 'OK'] : ['OK'],
-              defaultId: installCmd ? 0 : 0,
+              buttons: allCommands.length > 0 ? ['Copy Fix Commands', 'OK'] : ['OK'],
+              defaultId: 0,
               noLink: true,
             }).then((result) => {
-              if (installCmd && result.response === 0) {
-                electron.clipboard.writeText(installCmd);
+              if (allCommands.length > 0 && result.response === 0) {
+                electron.clipboard.writeText(copyText);
               }
             }).catch(() => {});
           };
