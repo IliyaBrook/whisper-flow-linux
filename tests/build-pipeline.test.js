@@ -54,7 +54,7 @@ describe('Linux helper validation', () => {
   });
 
   test('all source modules exist', () => {
-    const modules = ['ipc.js', 'handler.js', 'utils.js', 'accessibility.js', 'shortcuts.js', 'hardware.js'];
+    const modules = ['ipc.js', 'handler.js', 'utils.js', 'dep-check.js', 'accessibility.js', 'shortcuts.js', 'hardware.js'];
     for (const mod of modules) {
       expect(fs.existsSync(path.join(helperDir, 'src', mod))).toBe(true);
     }
@@ -66,7 +66,7 @@ describe('Linux helper validation', () => {
     }).not.toThrow();
   });
 
-  test.each(['ipc.js', 'handler.js', 'utils.js', 'accessibility.js', 'shortcuts.js', 'hardware.js'])(
+  test.each(['ipc.js', 'handler.js', 'utils.js', 'dep-check.js', 'accessibility.js', 'shortcuts.js', 'hardware.js'])(
     'src/%s has valid syntax', (mod) => {
       expect(() => {
         execSync(`node --check "${path.join(helperDir, 'src', mod)}"`, { stdio: 'pipe' });

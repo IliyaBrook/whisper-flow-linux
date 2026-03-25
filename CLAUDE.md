@@ -49,10 +49,11 @@ Sequential pipeline that transforms Windows Electron app into Linux app:
 
 Node.js process that replaces the Windows C#/.NET helper. Communicates with Electron main process via custom IPC protocol (stdin/fd3, pipe-delimited escaped JSON).
 
-- `main.js` — Entry point, tool detection, signal handling
+- `main.js` — Entry point, dependency check, signal handling
 - `src/ipc.js` — IPC protocol: message encoding/decoding, stdin reading, fd3 writing
 - `src/handler.js` — Routes all HelperAPI commands (PasteText, GetAppInfo, GetTextBoxInfo, etc.)
 - `src/utils.js` — X11/Wayland abstraction: clipboard (xclip/wl-clipboard), paste (xdotool/ydotool/uinput), window focus
+- `src/dep-check.js` — Runtime dependency checker: detects session type, checks required tools, generates install commands
 - `src/accessibility.js` — AT-SPI2 text field monitoring
 - `src/shortcuts.js` — Global keyboard shortcut registration
 - `src/hardware.js` — Hardware info from /proc

@@ -25,32 +25,49 @@ const { Handler } = require('./src/handler');
 function main() {
   console.log('Wispr Flow Linux Helper starting...');
 
-  // Check for required tools
-  const { tools, displayServer } = require('./src/utils');
+  // Run dependency check and report results
+  const { checkDependencies } = require('./src/dep-check');
+  const depReport = checkDependencies();
 
-  const missingCritical = [];
-  if (displayServer === 'x11') {
-    if (!tools.xdotool) missingCritical.push('xdotool');
-    if (!tools.xclip && !tools.xsel) missingCritical.push('xclip or xsel');
-  } else if (displayServer === 'wayland') {
-    if (!tools.wlCopy && !tools.wlPaste) missingCritical.push('wl-clipboard (wl-copy/wl-paste)');
+  // All dep-check output goes to stdout (not stderr) so that the Electron
+  // frame-fix-wrapper can read it from child.stdout and show a dialog.
+  console.log(`[dep-check] Session: ${depReport.session}, Desktop: ${depReport.desktop}`);
+
+  if (!depReport.ok) {
+    console.log('[dep-check] Missing critical dependencies:');
+    for (const m of depReport.missing) {
+      console.log(`[dep-check]   - ${m.tool}: ${m.reason}`);
+    }
+    if (depReport.installCommand) {
+      console.log(`[dep-check] Install with: ${depReport.installCommand}`);
+    }
   }
 
-  // On Wayland sessions (even in XWayland mode), ydotool is required for
-  // input simulation — xdotool's XTest triggers KDE "Remote Control" dialog
-  const realSession = process.env.XDG_SESSION_TYPE || (process.env.WAYLAND_DISPLAY ? 'wayland' : '');
-  if (realSession === 'wayland' && !tools.ydotool) {
-    missingCritical.push('ydotool (required on Wayland for input simulation)');
-  }
-
-  if (missingCritical.length > 0) {
-    console.error(`Missing critical tools: ${missingCritical.join(', ')}`);
+  for (const w of depReport.warnings) {
+    console.log(`[dep-check] WARNING: ${w}`);
   }
 
   // Initialize handler and IPC
   const handler = new Handler();
   const ipc = new IPC(handler);
   ipc.start();
+
+  // Send dependency report to Electron so it can show a user-friendly dialog
+  // (sent as a HelperAPIRequest that the Electron side can intercept)
+  if (!depReport.ok || depReport.warnings.length > 0) {
+    setTimeout(() => {
+      ipc.sendRequest({
+        DependencyReport: {
+          ok: depReport.ok,
+          session: depReport.session,
+          desktop: depReport.desktop,
+          missing: depReport.missing,
+          warnings: depReport.warnings,
+          installCommand: depReport.installCommand,
+        }
+      });
+    }, 500);
+  }
 
   console.log('Linux Helper ready, waiting for commands...');
 

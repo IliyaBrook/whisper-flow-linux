@@ -255,24 +255,38 @@ async function getClipboard() {
  */
 async function setClipboard(text) {
   try {
-    let cmd;
     if (displayServer === 'wayland' && tools.wlCopy) {
-      cmd = 'wl-copy';
-    } else if (tools.xclip) {
-      cmd = 'xclip -selection clipboard';
-    } else if (tools.xsel) {
-      cmd = 'xsel --clipboard --input';
-    } else {
-      return;
+      return new Promise((resolve, reject) => {
+        const proc = exec('wl-copy', { timeout: 2000 }, (err) => {
+          if (err) reject(err); else resolve();
+        });
+        proc.stdin.write(text);
+        proc.stdin.end();
+      });
     }
 
-    return new Promise((resolve, reject) => {
-      const proc = require('child_process').exec(cmd, { timeout: 2000 }, (err) => {
-        if (err) reject(err); else resolve();
+    if (tools.xclip) {
+      // Use xclip with -i and pass text via stdin.
+      // xclip forks into background to serve clipboard requests, so we wait
+      // for the initial process to exit (which means data is registered).
+      return new Promise((resolve, reject) => {
+        const proc = exec('xclip -selection clipboard -i', { timeout: 2000 }, (err) => {
+          if (err) reject(err); else resolve();
+        });
+        proc.stdin.write(text);
+        proc.stdin.end();
       });
-      proc.stdin.write(text);
-      proc.stdin.end();
-    });
+    }
+
+    if (tools.xsel) {
+      return new Promise((resolve, reject) => {
+        const proc = exec('xsel --clipboard --input', { timeout: 2000 }, (err) => {
+          if (err) reject(err); else resolve();
+        });
+        proc.stdin.write(text);
+        proc.stdin.end();
+      });
+    }
   } catch (err) {
     console.error(`[PASTE] setClipboard error: ${err.message}`);
   }
@@ -298,17 +312,36 @@ async function pasteText(text, _htmlText) {
     await sleep(80);
 
     // Simulate Ctrl+V on the currently focused window.
-    // On a real Wayland compositor (even in XWayland mode), avoid xdotool
-    // because its XTest requests trigger KDE Plasma's "Remote Control"
-    // permission dialog. Use uinput/ydotool which bypass the compositor.
+    // Strategy per display server:
+    //   Wayland (real): uinput python script → ydotool fallback
+    //   X11 with xdotool: xdotool key --window → xdotool key
+    //   X11 without xdotool: uinput python script (works at kernel level)
     if (isRealWayland()) {
-      success = await pasteWithNativeWayland();
-    } else if (displayServer === 'x11' && tools.xdotool) {
-      await execAsync('xdotool key --clearmodifiers ctrl+v', { timeout: 2000 });
-      success = true;
+      success = await pasteWithUinput();
+    } else if (displayServer === 'x11') {
+      if (tools.xdotool) {
+        // Preferred: xdotool can target a specific window
+        let targetWindow = storedWindowId;
+        if (!targetWindow) {
+          try {
+            const { stdout } = await execAsync('xdotool getactivewindow', { timeout: 1000 });
+            targetWindow = stdout.trim();
+          } catch { /* ignore */ }
+        }
+
+        if (targetWindow) {
+          await execAsync(`xdotool key --window ${targetWindow} --clearmodifiers ctrl+v`, { timeout: 2000 });
+        } else {
+          await execAsync('xdotool key --clearmodifiers ctrl+v', { timeout: 2000 });
+        }
+        success = true;
+      } else {
+        // Fallback: uinput works at kernel level, no X11 tools needed
+        console.log('[PASTE] xdotool not found, using uinput for Ctrl+V');
+        success = await pasteWithUinput();
+      }
     } else {
-      await simulateKeyCombo(['ctrl', 'v']);
-      success = true;
+      success = await pasteWithUinput();
     }
   } catch (err) {
     console.error(`[PASTE] error: ${err.message}`);
@@ -485,17 +518,26 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function pasteWithNativeWayland() {
+/**
+ * Simulate Ctrl+V via uinput (kernel-level virtual keyboard).
+ * Works on both X11 and Wayland — no display server tools needed.
+ * Falls back to ydotool if uinput script fails.
+ */
+async function pasteWithUinput() {
   try {
     await execAsync(`python3 "${UINPUT_SCRIPT}"`, { timeout: 3000 });
     return true;
   } catch (uinputError) {
     console.error(`[PASTE] uinput Ctrl+V failed: ${uinputError.message}`);
-    if (!tools.ydotool) {
-      return false;
+    if (tools.ydotool) {
+      await execAsync('ydotool key 29:1 47:1 47:0 29:0', { timeout: 3000 });
+      return true;
     }
-    await execAsync('ydotool key 29:1 47:1 47:0 29:0', { timeout: 3000 });
-    return true;
+    if (tools.xdotool) {
+      await execAsync('xdotool key --clearmodifiers ctrl+v', { timeout: 2000 });
+      return true;
+    }
+    return false;
   }
 }
 

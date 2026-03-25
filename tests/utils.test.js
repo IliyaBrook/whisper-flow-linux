@@ -390,7 +390,7 @@ describe('Wayland/XWayland backend behavior', () => {
 
     // Clipboard still uses xclip (X11 tool via XWayland — no permission dialog)
     expect(mockExec).toHaveBeenCalledWith(
-      'xclip -selection clipboard',
+      'xclip -selection clipboard -i',
       { timeout: 2000 },
       expect.any(Function)
     );

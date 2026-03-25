@@ -7,6 +7,121 @@ const originalRequire = Module.prototype.require;
 // Detect Wayland vs X11 for platform-specific overlay behavior
 const _isWayland = (process.env.XDG_SESSION_TYPE === 'wayland') || !!process.env.WAYLAND_DISPLAY;
 
+// --- Dependency check: intercept helper process spawn to read dep-check output ---
+if (process.platform === 'linux') {
+  const cp = require('child_process');
+  const origSpawn = cp.spawn;
+
+  let depDialogShown = false;
+
+  cp.spawn = function patchedSpawn(...args) {
+    const child = origSpawn.apply(this, args);
+
+    // Detect the linux-helper process by checking args for linux-helper/main.js
+    const spawnArgs = args[1] || [];
+    const isHelper = (typeof args[0] === 'string' && args[0].includes && args[0].includes('linux-helper')) ||
+      (Array.isArray(spawnArgs) && spawnArgs.some(a => typeof a === 'string' && a.includes('linux-helper')));
+
+    if (isHelper && child.stdout) {
+      let buffer = '';
+      const missingLines = [];
+      const warningLines = [];
+      let installCmd = '';
+      let sessionType = '';
+
+      child.stdout.on('data', (chunk) => {
+        buffer += chunk.toString();
+        let newlineIdx;
+        while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
+          const line = buffer.slice(0, newlineIdx);
+          buffer = buffer.slice(newlineIdx + 1);
+
+          if (line.includes('[dep-check] Session:')) {
+            const m = line.match(/Session:\s*(\w+)/);
+            if (m) sessionType = m[1];
+          }
+          if (line.includes('[dep-check] Missing') || line.includes('[dep-check]   -')) {
+            const toolMatch = line.match(/- (\S+): (.+)/);
+            if (toolMatch) missingLines.push(`${toolMatch[1]} — ${toolMatch[2]}`);
+          }
+          if (line.includes('[dep-check] Install with:')) {
+            installCmd = line.replace(/.*Install with:\s*/, '');
+          }
+          if (line.includes('[dep-check] WARNING:')) {
+            warningLines.push(line.replace(/.*WARNING:\s*/, ''));
+          }
+        }
+      });
+
+      // After helper has had time to start and report, show dialog if needed
+      setTimeout(() => {
+        if (depDialogShown) return;
+        if (missingLines.length === 0 && warningLines.length === 0) return;
+        depDialogShown = true;
+
+        try {
+          const electron = require('electron');
+          const { app, dialog } = electron;
+
+          const showDepDialog = () => {
+            const isCritical = missingLines.length > 0;
+            let message = isCritical
+              ? 'Wispr Flow is missing required dependencies for your system.'
+              : 'Wispr Flow detected potential configuration issues.';
+
+            let detail = '';
+            if (sessionType) {
+              detail += `Display server: ${sessionType}\n\n`;
+            }
+
+            if (missingLines.length > 0) {
+              detail += 'Missing packages:\n';
+              for (const l of missingLines) detail += `  \u2022 ${l}\n`;
+              detail += '\n';
+            }
+
+            if (warningLines.length > 0) {
+              detail += 'Warnings:\n';
+              for (const w of warningLines) detail += `  \u2022 ${w}\n`;
+              detail += '\n';
+            }
+
+            if (installCmd) {
+              detail += `Install command:\n  ${installCmd}\n`;
+            }
+
+            detail += '\nText insertion and other features may not work without these dependencies.';
+
+            dialog.showMessageBox({
+              type: isCritical ? 'error' : 'warning',
+              title: 'Wispr Flow — Missing Dependencies',
+              message,
+              detail,
+              buttons: installCmd ? ['Copy Install Command', 'OK'] : ['OK'],
+              defaultId: installCmd ? 0 : 0,
+              noLink: true,
+            }).then((result) => {
+              if (installCmd && result.response === 0) {
+                electron.clipboard.writeText(installCmd);
+              }
+            }).catch(() => {});
+          };
+
+          if (app.isReady()) {
+            showDepDialog();
+          } else {
+            app.whenReady().then(showDepDialog);
+          }
+        } catch (e) {
+          console.error('[dep-check] Failed to show dialog:', e.message);
+        }
+      }, 3000);
+    }
+
+    return child;
+  };
+}
+
 // Detect overlay/popup windows that should stay frameless.
 // Overlays have type:"toolbar" or alwaysOnTop+skipTaskbar.
 // The hub window is the only one WITHOUT these overlay properties.
