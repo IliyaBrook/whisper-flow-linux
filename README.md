@@ -192,6 +192,20 @@ The status overlay shows the recording state while dictating. On Linux, you can 
 4. Click **Reset** to return to the default position
 5. Your position is saved automatically and persists across restarts
 
+## Troubleshooting
+
+### KDE Plasma: "Remote Control" permission dialog
+
+On KDE Plasma (Wayland), you may see a **"Remote Control — An application is asking for special privileges: Control input devices"** dialog when using hotkeys. To disable it permanently:
+
+```bash
+kwriteconfig6 --file kwinrc --group Xwayland --key XwaylandEavesdrops All
+# Apply without logging out:
+dbus-send --session --type=method_call --dest=org.kde.KWin /KWin org.kde.KWin.reconfigure
+```
+
+Alternatively, go to **System Settings → Security & Privacy → Access Permissions** and allow input device control.
+
 ## How It Works
 
 The build pipeline performs the following steps:
