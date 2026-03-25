@@ -2,12 +2,12 @@
  * Tests for the Handler - verifies all HelperAPI commands are correctly routed
  * and produce the expected IPC responses.
  *
- * We mock all native dependencies (x11-utils, accessibility, etc.) since
+ * We mock all native dependencies (utils, accessibility, etc.) since
  * these tests run without a display server.
  */
 
 // Mock native modules before requiring handler
-jest.mock('../linux-helper/src/x11-utils', () => (
+jest.mock('../linux-helper/src/utils', () => (
   require('./helpers/linux-helper-test-mocks').createX11UtilsMock()
 ));
 
@@ -26,7 +26,7 @@ jest.mock('../linux-helper/src/hardware', () => (
 const { createMockIPC } = require('./helpers/linux-helper-test-mocks');
 
 const { Handler } = require('../linux-helper/src/handler');
-const x11 = require('../linux-helper/src/x11-utils');
+const x11 = require('../linux-helper/src/utils');
 const accessibility = require('../linux-helper/src/accessibility');
 const { getHardwareInfo } = require('../linux-helper/src/hardware');
 

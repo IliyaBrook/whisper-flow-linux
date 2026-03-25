@@ -12,8 +12,7 @@
     "build": "yarn run download && yarn run extract && yarn run patch && yarn run rebuild-native && yarn run package-deb",
     "build:appimage": "yarn run download && yarn run extract && yarn run patch && yarn run rebuild-native && yarn run package-appimage",
     "clean": "rm -rf build dist tmp",
-    "test": "jest --verbose",
-    "run-app": "./dist/Wispr_Flow-1.4.484-x86_64.AppImage"
+    "test": "jest --verbose"
   },
   "dependencies": {
     "asar": "^3.2.0",

@@ -26,7 +26,7 @@ function main() {
   console.log('Wispr Flow Linux Helper starting...');
 
   // Check for required tools
-  const { tools, displayServer } = require('./src/x11-utils');
+  const { tools, displayServer } = require('./src/utils');
 
   const missingCritical = [];
   if (displayServer === 'x11') {
@@ -34,6 +34,13 @@ function main() {
     if (!tools.xclip && !tools.xsel) missingCritical.push('xclip or xsel');
   } else if (displayServer === 'wayland') {
     if (!tools.wlCopy && !tools.wlPaste) missingCritical.push('wl-clipboard (wl-copy/wl-paste)');
+  }
+
+  // On Wayland sessions (even in XWayland mode), ydotool is required for
+  // input simulation — xdotool's XTest triggers KDE "Remote Control" dialog
+  const realSession = process.env.XDG_SESSION_TYPE || (process.env.WAYLAND_DISPLAY ? 'wayland' : '');
+  if (realSession === 'wayland' && !tools.ydotool) {
+    missingCritical.push('ydotool (required on Wayland for input simulation)');
   }
 
   if (missingCritical.length > 0) {

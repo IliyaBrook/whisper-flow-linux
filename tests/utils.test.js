@@ -1,5 +1,5 @@
 /**
- * Tests for x11-utils module
+ * Tests for utils module
  * Tests the pure functions (keycode mapping, display server detection, findFocusedNode)
  * and verifies the paste strategy logic with mocked exec calls.
  */
@@ -30,7 +30,7 @@ jest.mock('util', () => ({
 }));
 
 // ============================================================
-// Since x11-utils has module-level side effects (commandExists, displayServer),
+// Since utils has module-level side effects (commandExists, displayServer),
 // we test pure functions that can be extracted, and test the module
 // behavior by manipulating env vars before require.
 // ============================================================
@@ -377,7 +377,7 @@ describe('Wayland/XWayland backend behavior', () => {
     });
   }
 
-  test('Wayland session with XWayland override uses xdotool for paste', async () => {
+  test('Wayland session with XWayland override uses uinput for paste (avoids KDE Remote Control dialog)', async () => {
     process.env.XDG_SESSION_TYPE = 'wayland';
     process.env.WAYLAND_DISPLAY = 'wayland-0';
     process.env.WISPR_DISPLAY_BACKEND = 'x11';
@@ -385,20 +385,22 @@ describe('Wayland/XWayland backend behavior', () => {
     mockInstalledCommands(['xdotool', 'xclip']);
     mockExecAsync.mockResolvedValue({ stdout: '' });
 
-    const x11 = require('../linux-helper/src/x11-utils');
+    const x11 = require('../linux-helper/src/utils');
     await x11.pasteText('hello');
 
+    // Clipboard still uses xclip (X11 tool via XWayland — no permission dialog)
     expect(mockExec).toHaveBeenCalledWith(
       'xclip -selection clipboard',
       { timeout: 2000 },
       expect.any(Function)
     );
+    // But input simulation uses uinput (bypasses compositor)
     expect(mockExecAsync).toHaveBeenCalledWith(
-      'xdotool key --clearmodifiers ctrl+v',
-      { timeout: 2000 }
+      expect.stringContaining('uinput-ctrl-v.py'),
+      { timeout: 3000 }
     );
     expect(mockExecAsync).not.toHaveBeenCalledWith(
-      expect.stringContaining('uinput-ctrl-v.py'),
+      'xdotool key --clearmodifiers ctrl+v',
       expect.anything()
     );
   });
@@ -411,7 +413,7 @@ describe('Wayland/XWayland backend behavior', () => {
     mockInstalledCommands(['wl-copy']);
     mockExecAsync.mockResolvedValue({ stdout: '' });
 
-    const x11 = require('../linux-helper/src/x11-utils');
+    const x11 = require('../linux-helper/src/utils');
     await x11.pasteText('hello');
 
     expect(mockExec).toHaveBeenCalledWith(
@@ -433,7 +435,7 @@ describe('Wayland/XWayland backend behavior', () => {
     mockInstalledCommands(['xdotool']);
     mockExecAsync.mockResolvedValue({ stdout: '12345\n' });
 
-    const x11 = require('../linux-helper/src/x11-utils');
+    const x11 = require('../linux-helper/src/utils');
     await x11.storeFocusedWindow();
     await x11.focusStoredWindow();
 

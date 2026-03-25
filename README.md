@@ -91,22 +91,33 @@ sudo apt install libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 xdg-utils libats
 sudo dnf install gtk3 libnotify nss libXScrnSaver libXtst xdg-utils at-spi2-core libsecret xinput xdotool xclip
 ```
 
-Optional native Wayland helper tools (`WISPR_USE_WAYLAND=1`):
+**Required on Wayland sessions** (including the default XWayland mode):
+
+```bash
+# Debian / Ubuntu
+sudo apt install ydotool
+
+# Fedora / RHEL
+sudo dnf install ydotool
+```
+
+On Wayland, `ydotool` is used for input simulation instead of `xdotool` to avoid compositor permission dialogs (e.g. KDE Plasma's "Remote Control" prompt). You also need to add your user to the `input` group for `ydotool` and global hotkeys to work:
+
+```bash
+sudo usermod -aG input $USER
+# Log out and back in (or reboot) for the group change to take effect
+```
+
+Optional native Wayland helper tools (when using `WISPR_USE_WAYLAND=1`):
 
 **Debian / Ubuntu**
 ```bash
-sudo apt install wl-clipboard ydotool
+sudo apt install wl-clipboard
 ```
 
 **Fedora / RHEL**
 ```bash
-sudo dnf install wl-clipboard ydotool
-```
-
-Wayland global hotkeys may also require access to `/dev/input/event*`. If hotkeys still do not register on Wayland, add your user to the `input` group and reboot:
-
-```bash
-sudo usermod -aG input $USER
+sudo dnf install wl-clipboard
 ```
 
 #### Build Steps

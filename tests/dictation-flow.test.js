@@ -6,7 +6,7 @@
  * Electron sends a sequence of commands that happens during voice typing.
  */
 
-jest.mock('../linux-helper/src/x11-utils', () => (
+jest.mock('../linux-helper/src/utils', () => (
   require('./helpers/linux-helper-test-mocks').createX11UtilsMock()
 ));
 
@@ -32,7 +32,7 @@ const { createMockIPC } = require('./helpers/linux-helper-test-mocks');
 
 const { Handler } = require('../linux-helper/src/handler');
 const { IPC, escapeMessage, unescapeMessage } = require('../linux-helper/src/ipc');
-const x11 = require('../linux-helper/src/x11-utils');
+const x11 = require('../linux-helper/src/utils');
 const accessibility = require('../linux-helper/src/accessibility');
 
 // ============================================================

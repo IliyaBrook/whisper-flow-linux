@@ -24,6 +24,11 @@ APT_RUNTIME_PACKAGES=(
 
 APT_WAYLAND_PACKAGES=(
   wl-clipboard
+)
+
+# Required on any Wayland session (even XWayland mode) for input simulation
+# without triggering compositor permission dialogs
+APT_WAYLAND_SESSION_PACKAGES=(
   ydotool
 )
 
@@ -43,6 +48,9 @@ DNF_RUNTIME_PACKAGES=(
 
 DNF_WAYLAND_PACKAGES=(
   wl-clipboard
+)
+
+DNF_WAYLAND_SESSION_PACKAGES=(
   ydotool
 )
 
@@ -84,6 +92,13 @@ detect_package_manager() {
 
 use_native_wayland() {
   [[ "${WISPR_USE_WAYLAND:-0}" == "1" ]]
+}
+
+# Detect if running on a Wayland session (regardless of WISPR_USE_WAYLAND).
+# On Wayland, ydotool is required for input simulation even in XWayland mode,
+# because xdotool's XTest requests trigger KDE Plasma's "Remote Control" dialog.
+is_wayland_session() {
+  [[ "${XDG_SESSION_TYPE:-}" == "wayland" ]] || [[ -n "${WAYLAND_DISPLAY:-}" ]]
 }
 
 is_package_installed() {
@@ -163,10 +178,12 @@ case "$package_manager" in
   apt)
     runtime_packages=("${APT_RUNTIME_PACKAGES[@]}")
     wayland_packages=("${APT_WAYLAND_PACKAGES[@]}")
+    wayland_session_packages=("${APT_WAYLAND_SESSION_PACKAGES[@]}")
     ;;
   dnf)
     runtime_packages=("${DNF_RUNTIME_PACKAGES[@]}")
     wayland_packages=("${DNF_WAYLAND_PACKAGES[@]}")
+    wayland_session_packages=("${DNF_WAYLAND_SESSION_PACKAGES[@]}")
     ;;
   *)
     echo "Unsupported Linux distribution. Cannot determine runtime dependencies automatically." >&2
@@ -179,6 +196,14 @@ if [[ "$MODE" == "check" ]]; then
   while IFS= read -r package_name; do
     [[ -n "$package_name" ]] && missing_packages+=("$package_name")
   done < <(find_missing_packages "$package_manager" "${runtime_packages[@]}")
+
+  # On Wayland sessions, ydotool is required for input simulation
+  # (avoids KDE/compositor "Remote Control" permission dialogs)
+  if is_wayland_session; then
+    while IFS= read -r package_name; do
+      [[ -n "$package_name" ]] && missing_packages+=("$package_name")
+    done < <(find_missing_packages "$package_manager" "${wayland_session_packages[@]}")
+  fi
 
   if use_native_wayland; then
     while IFS= read -r package_name; do
@@ -202,11 +227,14 @@ case "$package_manager" in
     sudo apt-get update
     sudo apt-get install -y "${runtime_packages[@]}"
 
+    if is_wayland_session; then
+      echo "Wayland session detected. Installing ydotool for input simulation..."
+      install_optional_apt_packages "${wayland_session_packages[@]}"
+    fi
+
     if use_native_wayland; then
       echo "Native Wayland mode requested. Installing Wayland helper tools when available..."
       install_optional_apt_packages "${wayland_packages[@]}"
-    else
-      echo "Default X11/XWayland mode enabled. Native Wayland helper tools are optional."
     fi
     ;;
 
@@ -215,11 +243,14 @@ case "$package_manager" in
     echo "Installing required runtime dependencies for Wispr Flow..."
     sudo dnf install -y "${runtime_packages[@]}"
 
+    if is_wayland_session; then
+      echo "Wayland session detected. Installing ydotool for input simulation..."
+      sudo dnf install -y "${wayland_session_packages[@]}"
+    fi
+
     if use_native_wayland; then
       echo "Native Wayland mode requested. Installing Wayland helper tools..."
       sudo dnf install -y "${wayland_packages[@]}"
-    else
-      echo "Default X11/XWayland mode enabled. Native Wayland helper tools are optional."
     fi
     ;;
 esac

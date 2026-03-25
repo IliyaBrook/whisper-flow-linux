@@ -52,7 +52,7 @@ Node.js process that replaces the Windows C#/.NET helper. Communicates with Elec
 - `main.js` — Entry point, tool detection, signal handling
 - `src/ipc.js` — IPC protocol: message encoding/decoding, stdin reading, fd3 writing
 - `src/handler.js` — Routes all HelperAPI commands (PasteText, GetAppInfo, GetTextBoxInfo, etc.)
-- `src/x11-utils.js` — X11/Wayland abstraction: clipboard (xclip/wl-clipboard), paste (xdotool/ydotool), window focus
+- `src/utils.js` — X11/Wayland abstraction: clipboard (xclip/wl-clipboard), paste (xdotool/ydotool/uinput), window focus
 - `src/accessibility.js` — AT-SPI2 text field monitoring
 - `src/shortcuts.js` — Global keyboard shortcut registration
 - `src/hardware.js` — Hardware info from /proc

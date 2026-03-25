@@ -3,7 +3,7 @@
  * Routes HelperAPI requests to the appropriate Linux implementation
  */
 
-const x11 = require('./x11-utils');
+const x11 = require('./utils');
 const accessibility = require('./accessibility');
 const { ShortcutManager } = require('./shortcuts');
 const { getHardwareInfo } = require('./hardware');

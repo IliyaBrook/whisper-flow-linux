@@ -1,5 +1,5 @@
 /**
- * X11/Wayland utilities for Linux Helper
+ * Display server utilities for Linux Helper (X11 & Wayland)
  * Handles: window focus, app info, key simulation, clipboard, text paste
  */
 
@@ -26,6 +26,29 @@ function getDisplayServer() {
 
 const displayServer = getDisplayServer();
 
+/**
+ * Detect the REAL session type (ignoring WISPR_DISPLAY_BACKEND override).
+ * On Wayland+XWayland, the override makes displayServer='x11' so that
+ * clipboard/window tools use X11 tools. But for INPUT SIMULATION we must
+ * know the real compositor, because xdotool's XTest requests through
+ * XWayland trigger KDE Plasma's "Remote Control" permission dialog.
+ */
+function getRealSessionType() {
+  const xdg = process.env.XDG_SESSION_TYPE || '';
+  if (xdg === 'wayland') return 'wayland';
+  if (xdg === 'x11') return 'x11';
+  if (process.env.WAYLAND_DISPLAY) return 'wayland';
+  if (process.env.DISPLAY) return 'x11';
+  return 'unknown';
+}
+
+const realSessionType = getRealSessionType();
+
+/** True when running on a Wayland compositor, even in XWayland mode */
+function isRealWayland() {
+  return realSessionType === 'wayland';
+}
+
 function isNativeWaylandBackend() {
   return displayServer === 'wayland';
 }
@@ -33,6 +56,10 @@ function isNativeWaylandBackend() {
 // Path to the uinput Ctrl+V script
 const path = require('path');
 const UINPUT_SCRIPT = path.join(__dirname, 'uinput-ctrl-v.py');
+
+if (realSessionType !== displayServer) {
+  console.log(`[utils] Real session: ${realSessionType}, helper backend: ${displayServer} — input simulation will use uinput/ydotool to avoid compositor permission dialogs`);
+}
 
 /**
  * Check if a command exists
@@ -271,14 +298,14 @@ async function pasteText(text, _htmlText) {
     await sleep(80);
 
     // Simulate Ctrl+V on the currently focused window.
-    // Respect the helper backend override:
-    // - X11/XWayland mode uses xdotool
-    // - native Wayland mode uses uinput
-    if (displayServer === 'x11' && tools.xdotool) {
+    // On a real Wayland compositor (even in XWayland mode), avoid xdotool
+    // because its XTest requests trigger KDE Plasma's "Remote Control"
+    // permission dialog. Use uinput/ydotool which bypass the compositor.
+    if (isRealWayland()) {
+      success = await pasteWithNativeWayland();
+    } else if (displayServer === 'x11' && tools.xdotool) {
       await execAsync('xdotool key --clearmodifiers ctrl+v', { timeout: 2000 });
       success = true;
-    } else if (isNativeWaylandBackend()) {
-      success = await pasteWithNativeWayland();
     } else {
       await simulateKeyCombo(['ctrl', 'v']);
       success = true;
@@ -302,7 +329,10 @@ async function pasteText(text, _htmlText) {
  */
 async function simulateKeyPress(keycode, _flags) {
   try {
-    if (displayServer === 'x11' && tools.xdotool) {
+    // On real Wayland, prefer ydotool to avoid KDE "Remote Control" dialog
+    if (isRealWayland() && tools.ydotool) {
+      await execAsync(`ydotool key ${keycode}`);
+    } else if (displayServer === 'x11' && tools.xdotool) {
       const keyName = keycodeToXdotoolName(keycode);
       if (keyName) {
         await execAsync(`xdotool key ${keyName}`);
@@ -321,24 +351,22 @@ async function simulateKeyPress(keycode, _flags) {
 async function simulateKeyCombo(keys) {
   const combo = keys.join('+');
   try {
-    if (displayServer === 'x11' && tools.xdotool) {
-      await execAsync(`xdotool key --clearmodifiers ${combo}`);
-    } else if (displayServer === 'wayland') {
+    // On real Wayland (including XWayland mode), prefer ydotool/wtype
+    // to avoid KDE "Remote Control" permission dialog from xdotool's XTest
+    if (isRealWayland()) {
       if (tools.ydotool) {
-        // ydotool uses keycodes, need to translate
         await execAsync(`ydotool key ${combo}`);
-      } else if (tools.wlCopy) {
-        // For Ctrl+V specifically, we can try wtype
-        if (commandExists('wtype')) {
-          const modMap = { ctrl: '-M ctrl', shift: '-M shift', alt: '-M alt', super: '-M logo' };
-          let cmd = 'wtype';
-          for (const k of keys.slice(0, -1)) {
-            cmd += ` ${modMap[k] || ''}`;
-          }
-          cmd += ` -k ${keys[keys.length - 1]}`;
-          await execAsync(cmd);
+      } else if (commandExists('wtype')) {
+        const modMap = { ctrl: '-M ctrl', shift: '-M shift', alt: '-M alt', super: '-M logo' };
+        let cmd = 'wtype';
+        for (const k of keys.slice(0, -1)) {
+          cmd += ` ${modMap[k] || ''}`;
         }
+        cmd += ` -k ${keys[keys.length - 1]}`;
+        await execAsync(cmd);
       }
+    } else if (displayServer === 'x11' && tools.xdotool) {
+      await execAsync(`xdotool key --clearmodifiers ${combo}`);
     }
   } catch (err) {
     console.error(`simulateKeyCombo error: ${err.message}`);
