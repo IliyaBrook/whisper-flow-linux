@@ -268,6 +268,38 @@ function patchMainBundle() {
     console.warn('  WARNING: Could not find hub window crash pattern for DevTools injection');
   }
 
+  // ---- Patch 14: Overlay mouse events — fix for Linux ----
+  // On macOS/Windows, setIgnoreMouseEvents(true, {forward: true}) ignores clicks
+  // but still forwards CSS hover events. On Linux, {forward: true} does NOT work —
+  // the window gets zero mouse events, making the overlay completely non-interactive.
+  //
+  // Fix: Replace the alpha-based capturePage polling with simple toggle:
+  //   BarVisible → setIgnoreMouseEvents(false) → overlay receives all mouse events
+  //   BarHidden  → setIgnoreMouseEvents(true)  → transparent click-through
+  //
+  // Trade-off: the 440x300 overlay area blocks clicks on windows behind when
+  // the bar is visible. This is acceptable vs a completely broken overlay.
+
+  // Patch BarVisible: instead of starting alpha polling, just enable mouse events
+  const barVisibleOld = 'w.RA.statusWindow?.setIgnoreMouseEvents(!0)}),(0,M.Z4)(h.EB.BarVisible,!1,()=>{(0,m.iM)(I),I=(0,c.Bi)(w.RA.statusWindow)})';
+  const barVisibleNew = 'w.RA.statusWindow?.setIgnoreMouseEvents(!0)}),(0,M.Z4)(h.EB.BarVisible,!1,()=>{(0,m.iM)(I),w.RA.statusWindow?.setIgnoreMouseEvents(!1)})';
+  if (code.includes(barVisibleOld)) {
+    code = code.replace(barVisibleOld, barVisibleNew);
+    console.log('  Patched BarVisible: disabled alpha polling, using setIgnoreMouseEvents(false)');
+  } else {
+    console.warn('  WARNING: Could not find BarVisible pattern');
+  }
+
+  // Patch EnableMouseEvents: remove alpha polling start, just toggle
+  const enableMouseOld = 'w.RA.statusWindow?.setIgnoreMouseEvents(!e,{forward:!0}),e&&((0,m.iM)(I),I=(0,c.Bi)(w.RA.statusWindow))';
+  const enableMouseNew = 'w.RA.statusWindow?.setIgnoreMouseEvents(!e)';
+  if (code.includes(enableMouseOld)) {
+    code = code.replace(enableMouseOld, enableMouseNew);
+    console.log('  Patched EnableMouseEvents: removed alpha polling and {forward:true}');
+  } else {
+    console.warn('  WARNING: Could not find EnableMouseEvents pattern');
+  }
+
   // ---- Write patched bundle ----
   fs.writeFileSync(MAIN_BUNDLE, code);
   const newSize = code.length;
