@@ -182,6 +182,7 @@ Module.prototype.require = function(id) {
 			let overlayOffsetY = 0;
 			let overlayConfigPath = null;
 			const activeOverlays = [];
+			let contextMenuWin = null;
 			let positionWindow = null;
 
 			function loadOverlayConfig() {
@@ -300,6 +301,7 @@ Module.prototype.require = function(id) {
 				constructor(options) {
 					options = options || {};
 					let isOverlay = false;
+					const origTransparent = !!(options && options.transparent);
 
 					if (process.platform === 'linux') {
 						isOverlay = isOverlayWindow(options);
@@ -568,6 +570,8 @@ Module.prototype.require = function(id) {
 														Math.floor(r.top) + ':' + Math.ceil(r.width) + ':' +
 														Math.ceil(r.height);
 													if (key !== _last) { _last = key; console.log('OVL:shape:' + key); }
+												} else if (state === 'context-menu') {
+													if (_last !== 'ctx') { _last = 'ctx'; console.log('OVL:shape:ctx'); }
 												} else {
 													if (_last !== 'full') { _last = 'full'; console.log('OVL:shape:full'); }
 												}
@@ -586,7 +590,19 @@ Module.prototype.require = function(id) {
 								win.webContents.on('console-message', (_e, _level, msg) => {
 									if (!msg.startsWith('OVL:shape:') || win.isDestroyed()) return;
 									const payload = msg.slice(10);
-									if (payload === 'full') {
+									if (payload === 'ctx') {
+										// context-menu state: full shape + focus context menu window
+										if (lastShapeKey !== 'ctx') {
+											lastShapeKey = 'ctx';
+											setFullShape();
+											if (contextMenuWin && !contextMenuWin.isDestroyed()) {
+												contextMenuWin.moveTop();
+												contextMenuWin.focus();
+												if (debug) console.log('[Overlay] context-menu: focused contextMenuWin');
+											}
+											if (debug) console.log('[Overlay] shape: full (context-menu)');
+										}
+									} else if (payload === 'full') {
 										if (lastShapeKey !== 'full') {
 											lastShapeKey = 'full';
 											setFullShape();
@@ -706,31 +722,50 @@ Module.prototype.require = function(id) {
 						}
 
 						// --- Wayland: fix transparent popup windows (context menu etc.) ---
-						// The context menu is a separate BrowserWindow that gets
-						// blocked by the overlay. Shift its content up with CSS
-						// so it appears above the indicator, not behind it.
-						if (_isWayland && !isOverlay && options.transparent === true) {
+						// The context menu is a separate BrowserWindow. On Wayland:
+						// 1) setIgnoreMouseEvents({forward:true}) doesn't work → override
+						// 2) Menu renders behind overlay → shift up with persistent observer
+						// 3) Can't click menu → focus via overlay state detection
+						if (_isWayland && !isOverlay && origTransparent) {
 							const debug = process.env.WISPR_DEBUG === '1';
 							const popupWin = this;
 							const origPopupSetIgnore = this.setIgnoreMouseEvents.bind(this);
 
+							if (debug) console.log('[ContextMenu] window created, saving reference');
+							contextMenuWin = popupWin;
+
 							this.setIgnoreMouseEvents = (ignore, _opts) => {
 								origPopupSetIgnore(false);
-								if (debug) console.log('[Popup] setIgnoreMouseEvents override: false (Wayland)');
 							};
 
 							popupWin.setAlwaysOnTop(true, 'pop-up-menu');
 
-							// Shift menu content up so it clears the overlay
-							popupWin.webContents.on('did-finish-load', () => {
+							// Inject MutationObserver that persistently forces position
+							const injectPositionFix = () => {
 								if (popupWin.isDestroyed()) return;
 								popupWin.webContents.executeJavaScript(`
 									(() => {
-										const style = document.createElement('style');
-										style.textContent = '[data-flow-menu] { bottom: 300px !important; top: auto !important; }';
-										document.head.appendChild(style);
+										if (window._flowMenuFixInstalled) return;
+										window._flowMenuFixInstalled = true;
+										function fix() {
+											const el = document.querySelector('[data-flow-menu]');
+											if (el) el.style.setProperty('top', '300px', 'important');
+										}
+										const obs = new MutationObserver(fix);
+										obs.observe(document.body, {
+											childList: true, subtree: true,
+											attributes: true, attributeFilter: ['style']
+										});
+										fix();
 									})()
 								`).catch(() => {});
+								if (debug) console.log('[ContextMenu] injected position fix observer');
+							};
+							popupWin.webContents.on('dom-ready', injectPositionFix);
+							popupWin.webContents.on('did-finish-load', injectPositionFix);
+
+							popupWin.on('closed', () => {
+								if (contextMenuWin === popupWin) contextMenuWin = null;
 							});
 						}
 
