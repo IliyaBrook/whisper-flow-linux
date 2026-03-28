@@ -561,7 +561,7 @@ Module.prototype.require = function(id) {
 												const ind = document.querySelector('[data-indicator-state]');
 												if (!ind) return;
 												const state = ind.getAttribute('data-indicator-state');
-												if (state === 'resting' || state === 'active_popo') {
+												if (state === 'resting') {
 													const r = ind.getBoundingClientRect();
 													if (r.width < 1 || r.height < 1) return;
 													const key = 'small:' + Math.floor(r.left) + ':' +
@@ -706,10 +706,9 @@ Module.prototype.require = function(id) {
 						}
 
 						// --- Wayland: fix transparent popup windows (context menu etc.) ---
-						// On Wayland, setIgnoreMouseEvents(true, {forward:true}) doesn't
-						// work, and windows can't steal focus unless they have a parent.
-						// Fix: set overlay as parent so the popup inherits activation,
-						// override setIgnoreMouseEvents, and shift menu position up.
+						// The context menu is a separate BrowserWindow that gets
+						// blocked by the overlay. Shift its content up with CSS
+						// so it appears above the indicator, not behind it.
 						if (_isWayland && !isOverlay && options.transparent === true) {
 							const debug = process.env.WISPR_DEBUG === '1';
 							const popupWin = this;
@@ -720,41 +719,18 @@ Module.prototype.require = function(id) {
 								if (debug) console.log('[Popup] setIgnoreMouseEvents override: false (Wayland)');
 							};
 
-							// Find an active overlay to use as parent — this gives
-							// the popup activation on Wayland (child inherits focus)
-							if (activeOverlays.length > 0) {
-								const parentOverlay = activeOverlays[0].win;
-								if (parentOverlay && !parentOverlay.isDestroyed()) {
-									try {
-										popupWin.setParentWindow(parentOverlay);
-										if (debug) console.log('[Popup] set parent to overlay window');
-									} catch (e) {
-										if (debug) console.log('[Popup] setParentWindow failed:', e.message);
-									}
-								}
-							}
-
 							popupWin.setAlwaysOnTop(true, 'pop-up-menu');
 
-							// Shift the menu content up and ensure it's clickable
+							// Shift menu content up so it clears the overlay
 							popupWin.webContents.on('did-finish-load', () => {
 								if (popupWin.isDestroyed()) return;
 								popupWin.webContents.executeJavaScript(`
 									(() => {
 										const style = document.createElement('style');
-										style.textContent = '[data-flow-menu] { transform: translateX(-50%) translateY(-100%) !important; }';
+										style.textContent = '[data-flow-menu] { bottom: 300px !important; top: auto !important; }';
 										document.head.appendChild(style);
 									})()
 								`).catch(() => {});
-								popupWin.focus();
-							});
-
-							popupWin.once('show', () => {
-								if (!popupWin.isDestroyed()) {
-									popupWin.moveTop();
-									popupWin.focus();
-									if (debug) console.log('[Popup] shown, moveTop + focus');
-								}
 							});
 						}
 
