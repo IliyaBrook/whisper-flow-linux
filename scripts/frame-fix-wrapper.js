@@ -591,29 +591,41 @@ Module.prototype.require = function(id) {
 									if (!msg.startsWith('OVL:shape:') || win.isDestroyed()) return;
 									const payload = msg.slice(10);
 									if (payload === 'ctx') {
-										// context-menu state: full shape + focus context menu window
+										// context-menu: hide overlay so context menu is
+										// fully visible and clickable (Wayland can't
+										// reliably re-focus popup windows)
 										if (lastShapeKey !== 'ctx') {
 											lastShapeKey = 'ctx';
 											setFullShape();
+											win.hide();
 											if (contextMenuWin && !contextMenuWin.isDestroyed()) {
 												contextMenuWin.moveTop();
 												contextMenuWin.focus();
-												if (debug) console.log('[Overlay] context-menu: focused contextMenuWin');
 											}
-											if (debug) console.log('[Overlay] shape: full (context-menu)');
+											if (debug) console.log('[Overlay] hidden for context-menu');
 										}
 									} else if (payload === 'full') {
 										if (lastShapeKey !== 'full') {
+											const wasCtx = lastShapeKey === 'ctx';
 											lastShapeKey = 'full';
 											setFullShape();
+											if (wasCtx && !win.isDestroyed()) {
+												win.show();
+												if (debug) console.log('[Overlay] restored after context-menu');
+											}
 											if (debug) console.log('[Overlay] shape: full window');
 										}
 									} else if (payload.startsWith('small:')) {
+										const wasCtx = lastShapeKey === 'ctx';
 										const p = payload.slice(6).split(':').map(Number);
 										if (p.length === 4 && p[2] > 0 && p[3] > 0) {
 											const key = payload;
 											if (lastShapeKey !== key) {
 												lastShapeKey = key;
+												if (wasCtx && !win.isDestroyed()) {
+													win.show();
+													if (debug) console.log('[Overlay] restored after context-menu');
+												}
 												try {
 													win.setShape([{
 														x: Math.max(0, p[0] - SHAPE_PAD),
@@ -739,30 +751,6 @@ Module.prototype.require = function(id) {
 							};
 
 							popupWin.setAlwaysOnTop(true, 'pop-up-menu');
-
-							// Inject MutationObserver that persistently forces position
-							const injectPositionFix = () => {
-								if (popupWin.isDestroyed()) return;
-								popupWin.webContents.executeJavaScript(`
-									(() => {
-										if (window._flowMenuFixInstalled) return;
-										window._flowMenuFixInstalled = true;
-										function fix() {
-											const el = document.querySelector('[data-flow-menu]');
-											if (el) el.style.setProperty('top', '300px', 'important');
-										}
-										const obs = new MutationObserver(fix);
-										obs.observe(document.body, {
-											childList: true, subtree: true,
-											attributes: true, attributeFilter: ['style']
-										});
-										fix();
-									})()
-								`).catch(() => {});
-								if (debug) console.log('[ContextMenu] injected position fix observer');
-							};
-							popupWin.webContents.on('dom-ready', injectPositionFix);
-							popupWin.webContents.on('did-finish-load', injectPositionFix);
 
 							popupWin.on('closed', () => {
 								if (contextMenuWin === popupWin) contextMenuWin = null;
