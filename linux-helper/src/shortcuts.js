@@ -103,6 +103,25 @@ for (const [x11Code, vkCode] of Object.entries(X11_TO_VK)) {
   }
 }
 
+// Evdev mouse button codes (BTN_*) → Windows VK codes
+// These are EV_KEY events with codes in the 0x110+ range
+const EVDEV_MOUSE_BTN_TO_VK = {
+  272: 1,  // BTN_LEFT    → VK_LBUTTON
+  273: 2,  // BTN_RIGHT   → VK_RBUTTON
+  274: 4,  // BTN_MIDDLE  → VK_MBUTTON
+  275: 5,  // BTN_SIDE    → VK_XBUTTON1 (Mouse 4 / Back)
+  276: 6,  // BTN_EXTRA   → VK_XBUTTON2 (Mouse 5 / Forward)
+};
+
+// X11 button numbers (from xinput) → Windows VK codes
+const X11_BUTTON_TO_VK = {
+  1: 1,  // Left       → VK_LBUTTON
+  2: 4,  // Middle     → VK_MBUTTON
+  3: 2,  // Right      → VK_RBUTTON
+  8: 5,  // Back/Side  → VK_XBUTTON1 (Mouse 4)
+  9: 6,  // Forward    → VK_XBUTTON2 (Mouse 5)
+};
+
 // sizeof(struct input_event) on 64-bit Linux
 const INPUT_EVENT_SIZE = 24;
 const EV_KEY = 1;
@@ -185,17 +204,22 @@ class ShortcutManager {
 
   _startEvdevKeyMonitor() {
     const keyboards = this._findKeyboardDevices();
+    const mice = this._findMouseDevices();
+    // Deduplicate — some devices may appear in both lists
+    const allDevices = [...new Set([...keyboards, ...mice])];
     const status = {
       started: false,
       opened: 0,
       permissionDenied: 0,
     };
-    if (keyboards.length === 0) {
-      console.error('[Shortcuts] No keyboard devices found in /dev/input/');
+    if (allDevices.length === 0) {
+      console.error('[Shortcuts] No keyboard or mouse devices found in /dev/input/');
       return status;
     }
 
-    for (const device of keyboards) {
+    dbg(`evdev devices to monitor: keyboards=${JSON.stringify(keyboards)} mice=${JSON.stringify(mice)}`);
+
+    for (const device of allDevices) {
       const result = this._openEvdevDevice(device);
       if (result.opened) {
         status.opened++;
@@ -207,10 +231,10 @@ class ShortcutManager {
     if (status.opened > 0) {
       this._usingEvdev = true;
       status.started = true;
-      console.log(`[Shortcuts] evdev: monitoring ${status.opened} keyboard device(s) on Wayland`);
+      console.log(`[Shortcuts] evdev: monitoring ${status.opened} input device(s) on Wayland (keyboards: ${keyboards.length}, mice: ${mice.length})`);
       return status;
     }
-    console.error('[Shortcuts] Failed to open any keyboard device');
+    console.error('[Shortcuts] Failed to open any input device');
     return status;
   }
 
@@ -242,6 +266,62 @@ class ShortcutManager {
         const evMatch = section.match(/B: EV=(\w+)/);
         const keyMatch = section.match(/B: KEY=.*(e0000|10000)/);
         if (evMatch && keyMatch) {
+          const handlerMatch = section.match(/H: Handlers=.*?(event\d+)/);
+          if (handlerMatch) {
+            devices.push(`/dev/input/${handlerMatch[1]}`);
+          }
+        }
+      }
+    } catch (e) { /* ignore */ }
+
+    return [...new Set(devices)];
+  }
+
+  _findMouseDevices() {
+    const devices = [];
+
+    // Method 1: /dev/input/by-path/*-mouse symlinks (physical mice)
+    try {
+      const byPath = '/dev/input/by-path/';
+      if (fs.existsSync(byPath)) {
+        const entries = fs.readdirSync(byPath);
+        for (const entry of entries) {
+          if (entry.includes('-mouse') && entry.includes('event')) {
+            try {
+              devices.push(fs.realpathSync(`${byPath}${entry}`));
+            } catch (e) { /* broken symlink */ }
+          }
+        }
+      }
+    } catch (e) { /* ignore */ }
+
+    // Method 2: /dev/input/by-id/*-mouse symlinks
+    try {
+      const byId = '/dev/input/by-id/';
+      if (fs.existsSync(byId)) {
+        const entries = fs.readdirSync(byId);
+        for (const entry of entries) {
+          if (entry.includes('-mouse') && entry.includes('event')) {
+            try {
+              devices.push(fs.realpathSync(`${byId}${entry}`));
+            } catch (e) { /* broken symlink */ }
+          }
+        }
+      }
+    } catch (e) { /* ignore */ }
+
+    if (devices.length > 0) return [...new Set(devices)];
+
+    // Method 3: parse /proc/bus/input/devices for mice
+    // Look for devices with REL bits (mice report relative motion)
+    try {
+      const content = fs.readFileSync('/proc/bus/input/devices', 'utf8');
+      const sections = content.split('\n\n');
+      for (const section of sections) {
+        // Mice have EV bit for REL (0x2) and KEY (0x1) — EV bitmask includes 0x17 or similar
+        const hasRel = section.match(/B: REL=/);
+        const hasKey = section.match(/B: KEY=/);
+        if (hasRel && hasKey) {
           const handlerMatch = section.match(/H: Handlers=.*?(event\d+)/);
           if (handlerMatch) {
             devices.push(`/dev/input/${handlerMatch[1]}`);
@@ -291,13 +371,16 @@ class ShortcutManager {
 
         if (type === EV_KEY) {
           const vkCode = EVDEV_TO_VK[code];
-          dbg(`EV_KEY code=${code} value=${value} vkCode=${vkCode} ipc=${!!this.ipc}`);
-          if (vkCode !== undefined) {
+          const mouseVk = EVDEV_MOUSE_BTN_TO_VK[code];
+          const resolvedVk = vkCode !== undefined ? vkCode : mouseVk;
+          const isMouse = mouseVk !== undefined && vkCode === undefined;
+          dbg(`EV_KEY code=${code} value=${value} vkCode=${vkCode} mouseVk=${mouseVk} isMouse=${isMouse} ipc=${!!this.ipc}`);
+          if (resolvedVk !== undefined) {
             if (value === 1) { // press
-              this._forwardKeyState(vkCode, true);
+              this._forwardInputState(resolvedVk, true, isMouse);
             } else if (value === 2) { // repeat (key held down) — ignore
             } else if (value === 0) { // release
-              this._forwardKeyState(vkCode, false);
+              this._forwardInputState(resolvedVk, false, isMouse);
             }
           }
         }
@@ -371,16 +454,38 @@ class ShortcutManager {
 
   _parseXinputLine(line) {
     if (line.includes('RawKeyPress')) {
-      this._currentEventType = 'key_event_press';
+      this._currentEventType = 'key_press';
+      this._currentEventIsMouse = false;
     } else if (line.includes('RawKeyRelease')) {
-      this._currentEventType = 'key_event_release';
+      this._currentEventType = 'key_release';
+      this._currentEventIsMouse = false;
+    } else if (line.includes('RawButtonPress')) {
+      this._currentEventType = 'btn_press';
+      this._currentEventIsMouse = true;
+    } else if (line.includes('RawButtonRelease')) {
+      this._currentEventType = 'btn_release';
+      this._currentEventIsMouse = true;
     } else if (this._currentEventType) {
       const detailMatch = line.match(/detail:\s*(\d+)/);
       if (detailMatch) {
-        const x11Keycode = parseInt(detailMatch[1], 10);
-        const vkCode = X11_TO_VK[x11Keycode];
-        if (vkCode !== undefined) {
-          this._forwardKeyState(vkCode, this._currentEventType === 'key_event_press');
+        const detail = parseInt(detailMatch[1], 10);
+        if (this._currentEventIsMouse) {
+          // Skip scroll wheel buttons (4-7)
+          if (detail >= 4 && detail <= 7) {
+            this._currentEventType = null;
+            return;
+          }
+          const vkCode = X11_BUTTON_TO_VK[detail];
+          if (vkCode !== undefined) {
+            const isPressed = this._currentEventType === 'btn_press';
+            this._forwardInputState(vkCode, isPressed, true);
+          }
+        } else {
+          const vkCode = X11_TO_VK[detail];
+          if (vkCode !== undefined) {
+            const isPressed = this._currentEventType === 'key_press';
+            this._forwardInputState(vkCode, isPressed, false);
+          }
         }
         this._currentEventType = null;
       }
@@ -391,29 +496,37 @@ class ShortcutManager {
   // Common
   // ============================================================
 
-  _forwardKeyState(vkCode, isPressed) {
+  _forwardInputState(vkCode, isPressed, isMouse) {
+    // Use separate tracking keys for mouse vs keyboard to avoid collisions
+    // (e.g. VK_LBUTTON=1 vs keyboard code 1)
+    const trackKey = isMouse ? `m${vkCode}` : `k${vkCode}`;
     if (isPressed) {
-      if (this._pressedKeys.has(vkCode)) {
+      if (this._pressedKeys.has(trackKey)) {
         return;
       }
-      this._pressedKeys.add(vkCode);
-      this._sendKeyEvent('key_event_press', vkCode);
+      this._pressedKeys.add(trackKey);
+      this._sendInputEvent(isMouse ? 'mouse_event' : 'key_event_press', vkCode, isMouse);
       return;
     }
 
-    if (!this._pressedKeys.has(vkCode)) {
+    if (!this._pressedKeys.has(trackKey)) {
       return;
     }
-    this._pressedKeys.delete(vkCode);
-    this._sendKeyEvent('key_event_release', vkCode);
+    this._pressedKeys.delete(trackKey);
+    this._sendInputEvent(isMouse ? 'mouse_event_release' : 'key_event_release', vkCode, isMouse);
   }
 
-  _sendKeyEvent(eventType, vkCode) {
+  // Keep backward-compatible alias for any external callers
+  _forwardKeyState(vkCode, isPressed) {
+    this._forwardInputState(vkCode, isPressed, false);
+  }
+
+  _sendInputEvent(eventType, vkCode, isMouse) {
     if (!this.ipc) {
-      dbg(`_sendKeyEvent: NO IPC! event=${eventType} vk=${vkCode}`);
+      dbg(`_sendInputEvent: NO IPC! event=${eventType} vk=${vkCode} mouse=${isMouse}`);
       return;
     }
-    dbg(`SENDING ${eventType} vk=${vkCode}`);
+    dbg(`SENDING ${eventType} vk=${vkCode} mouse=${isMouse}`);
 
     this.eventIndex++;
     this.ipc.sendRequest({
@@ -423,7 +536,7 @@ class ShortcutManager {
           eventType,
           key: vkCode,
           index: this.eventIndex,
-          inputType: 'keyboard',
+          inputType: isMouse ? 'mouse' : 'keyboard',
         }
       }
     });

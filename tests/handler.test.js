@@ -278,6 +278,7 @@ describe('Handler: context & focus', () => {
       uuid: 'sel-1',
       SelectedTextViaCopy: {
         payload: {
+          afterText: '',
           beforeText: '',
           contents: 'selected text here',
           selectedText: 'selected text here',
