@@ -1,15 +1,19 @@
 DEB := $(firstword $(wildcard dist/wispr-flow_*.deb))
 APPIMAGE := $(firstword $(wildcard dist/Wispr_Flow-*-x86_64.AppImage))
 
-.PHONY: build build-deb build-appimage rebuild download extract patch rebuild-native \
-        test run run-debug debug-cmd clean install uninstall check-runtime-deps
+.PHONY: build build-deb build-appimage build-appimage-only rebuild download extract patch \
+        rebuild-native test run run-debug debug-cmd clean install uninstall check-runtime-deps
 
-build: build-deb
+build: build-deb build-appimage-only
 
 build-deb: download extract patch rebuild-native
 	yarn run package-deb
 
 build-appimage: check-runtime-deps download extract patch rebuild-native
+	yarn run package-appimage
+
+# Package AppImage only (no download/extract/patch/rebuild — used after build-deb)
+build-appimage-only:
 	yarn run package-appimage
 
 check-runtime-deps:
