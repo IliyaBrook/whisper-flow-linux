@@ -7,136 +7,6 @@ const originalRequire = Module.prototype.require;
 // Detect Wayland vs X11 for platform-specific overlay behavior
 const _isWayland = (process.env.XDG_SESSION_TYPE === 'wayland') || !!process.env.WAYLAND_DISPLAY;
 
-// --- Dependency check: intercept helper process spawn to read dep-check output ---
-if (process.platform === 'linux') {
-  const cp = require('child_process');
-  const origSpawn = cp.spawn;
-
-  let depDialogShown = false;
-
-  cp.spawn = function patchedSpawn(...args) {
-    const child = origSpawn.apply(this, args);
-
-    // Detect the linux-helper process by checking args for linux-helper/main.js
-    const spawnArgs = args[1] || [];
-    const isHelper = (typeof args[0] === 'string' && args[0].includes && args[0].includes('linux-helper')) ||
-      (Array.isArray(spawnArgs) && spawnArgs.some(a => typeof a === 'string' && a.includes('linux-helper')));
-
-    if (isHelper && child.stdout) {
-      let buffer = '';
-      const missingLines = [];
-      const warningLines = [];
-      let installCmd = '';
-      let sessionType = '';
-      const fixCommandLines = [];
-
-      child.stdout.on('data', (chunk) => {
-        buffer += chunk.toString();
-        let newlineIdx;
-        while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
-          const line = buffer.slice(0, newlineIdx);
-          buffer = buffer.slice(newlineIdx + 1);
-
-          if (line.includes('[dep-check] Session:')) {
-            const m = line.match(/Session:\s*(\w+)/);
-            if (m) sessionType = m[1];
-          }
-          if (line.includes('[dep-check]   -')) {
-            const toolMatch = line.match(/- (\S+): (.+)/);
-            if (toolMatch) missingLines.push(`${toolMatch[1]} — ${toolMatch[2]}`);
-          }
-          if (line.includes('[dep-check] Install with:')) {
-            installCmd = line.replace(/.*Install with:\s*/, '');
-          }
-          if (line.includes('[dep-check] WARNING:')) {
-            warningLines.push(line.replace(/.*WARNING:\s*/, ''));
-          }
-          if (line.includes('[dep-check] Fix command:')) {
-            fixCommandLines.push(line.replace(/.*Fix command:\s*/, ''));
-          }
-        }
-      });
-
-      // After helper has had time to start and report, show dialog if needed
-      setTimeout(() => {
-        if (depDialogShown) return;
-        if (missingLines.length === 0 && warningLines.length === 0) return;
-        depDialogShown = true;
-
-        try {
-          const electron = require('electron');
-          const { app, dialog } = electron;
-
-          const showDepDialog = () => {
-            const isCritical = missingLines.length > 0;
-            const message = isCritical
-              ? 'Wispr Flow is missing required dependencies for your system.'
-              : 'Wispr Flow detected potential configuration issues.';
-
-            // Build all commands to copy (install + fix commands like usermod)
-            const allCommands = [];
-            if (installCmd) allCommands.push(installCmd);
-            for (const cmd of fixCommandLines) allCommands.push(cmd);
-
-            let detail = '';
-            if (sessionType) {
-              detail += `Display server: ${sessionType}\n\n`;
-            }
-
-            if (missingLines.length > 0) {
-              detail += 'Missing packages:\n';
-              for (const l of missingLines) detail += `  \u2022 ${l}\n`;
-              detail += '\n';
-            }
-
-            if (warningLines.length > 0) {
-              detail += 'Warnings:\n';
-              for (const w of warningLines) {
-                // Clean up multi-line warnings for dialog display
-                detail += `  \u2022 ${w.replace(/\\n/g, '\n    ')}\n`;
-              }
-              detail += '\n';
-            }
-
-            if (allCommands.length > 0) {
-              detail += 'Run these commands to fix:\n';
-              for (const cmd of allCommands) detail += `  ${cmd}\n`;
-            }
-
-            detail += '\nText insertion and other features may not work without these fixes.';
-
-            const copyText = allCommands.join(' && ');
-
-            dialog.showMessageBox({
-              type: isCritical ? 'error' : 'warning',
-              title: 'Wispr Flow \u2014 Missing Dependencies',
-              message,
-              detail,
-              buttons: allCommands.length > 0 ? ['Copy Fix Commands', 'OK'] : ['OK'],
-              defaultId: 0,
-              noLink: true,
-            }).then((result) => {
-              if (allCommands.length > 0 && result.response === 0) {
-                electron.clipboard.writeText(copyText);
-              }
-            }).catch(() => {});
-          };
-
-          if (app.isReady()) {
-            showDepDialog();
-          } else {
-            app.whenReady().then(showDepDialog);
-          }
-        } catch (e) {
-          console.error('[dep-check] Failed to show dialog:', e.message);
-        }
-      }, 3000);
-    }
-
-    return child;
-  };
-}
-
 // Detect overlay/popup windows that should stay frameless.
 // Overlays have type:"toolbar" or alwaysOnTop+skipTaskbar.
 // The hub window is the only one WITHOUT these overlay properties.
@@ -177,25 +47,59 @@ Module.prototype.require = function(id) {
 			const OriginalBrowserWindow = result.BrowserWindow;
 			const OriginalMenu = result.Menu;
 
-			// --- Overlay position offset (shared state) ---
-			let overlayOffsetX = 0;
-			let overlayOffsetY = 0;
+			// --- Multi-display overlay configuration (shared state) ---
+			let overlayConfig = {
+				version: 2,
+				enabledDisplayIds: [],
+				perDisplay: {}
+			};
 			let overlayConfigPath = null;
 			const activeOverlays = [];
+			const cloneWindows = [];
 			let positionWindow = null;
+
+			function getDisplayForBounds(bounds) {
+				const { screen: s } = require('electron');
+				return s.getDisplayNearestPoint({
+					x: bounds.x + (bounds.width || 0) / 2,
+					y: bounds.y + (bounds.height || 0) / 2
+				});
+			}
+
+			function getDisplayOffset(displayId) {
+				const pd = overlayConfig.perDisplay[String(displayId)];
+				return pd ? { x: pd.offsetX || 0, y: pd.offsetY || 0 } : { x: 0, y: 0 };
+			}
 
 			function loadOverlayConfig() {
 				if (overlayConfigPath !== null) return;
 				try {
 					const path = require('path');
 					const fs = require('fs');
+					const { screen: s } = require('electron');
 					overlayConfigPath = path.join(
 						result.app.getPath('userData'),
 						'linux-overlay-position.json'
 					);
 					const data = JSON.parse(fs.readFileSync(overlayConfigPath, 'utf8'));
-					if (typeof data.offsetX === 'number') overlayOffsetX = data.offsetX;
-					if (typeof data.offsetY === 'number') overlayOffsetY = data.offsetY;
+					if (data.version === 2) {
+						overlayConfig = data;
+					} else {
+						// v1 -> v2 migration
+						const primaryId = s.getPrimaryDisplay().id;
+						overlayConfig = {
+							version: 2,
+							enabledDisplayIds: [primaryId],
+							perDisplay: {}
+						};
+						if (typeof data.offsetX === 'number' || typeof data.offsetY === 'number') {
+							overlayConfig.perDisplay[String(primaryId)] = {
+								offsetX: data.offsetX || 0,
+								offsetY: data.offsetY || 0
+							};
+						}
+						saveOverlayConfig();
+					}
 				} catch {
 					if (!overlayConfigPath) {
 						try {
@@ -205,6 +109,10 @@ Module.prototype.require = function(id) {
 							);
 						} catch { /* ignore */ }
 					}
+					try {
+						const { screen: s } = require('electron');
+						overlayConfig.enabledDisplayIds = [s.getPrimaryDisplay().id];
+					} catch { /* screen not ready */ }
 				}
 			}
 
@@ -216,81 +124,262 @@ Module.prototype.require = function(id) {
 					fs.mkdirSync(path.dirname(overlayConfigPath), { recursive: true });
 					fs.writeFileSync(
 						overlayConfigPath,
-						JSON.stringify({ offsetX: overlayOffsetX, offsetY: overlayOffsetY }),
+						JSON.stringify(overlayConfig, null, 2),
 						'utf8'
 					);
 				} catch { /* ignore */ }
 			}
 
-			function moveAllOverlays(dx, dy) {
-				overlayOffsetX += dx;
-				overlayOffsetY += dy;
+			function moveOverlay(displayId, dx, dy) {
+				const key = String(displayId);
+				if (!overlayConfig.perDisplay[key]) {
+					overlayConfig.perDisplay[key] = { offsetX: 0, offsetY: 0 };
+				}
+				overlayConfig.perDisplay[key].offsetX += dx;
+				overlayConfig.perDisplay[key].offsetY += dy;
 				saveOverlayConfig();
-				for (const o of activeOverlays) o.applyOffset();
+				applyAllPositions();
 			}
 
-			function openOverlayPositionWindow() {
+			function resetOverlay(displayId) {
+				overlayConfig.perDisplay[String(displayId)] = { offsetX: 0, offsetY: 0 };
+				saveOverlayConfig();
+				applyAllPositions();
+			}
+
+			function applyAllPositions() {
+				for (const o of activeOverlays) {
+					if (!o.win.isDestroyed()) o.applyOffset();
+				}
+				for (const c of cloneWindows) {
+					if (!c.win.isDestroyed()) updateClonePosition(c);
+				}
+			}
+
+			function toggleDisplay(displayId) {
+				const idx = overlayConfig.enabledDisplayIds.indexOf(displayId);
+				if (idx >= 0) {
+					if (overlayConfig.enabledDisplayIds.length <= 1) return;
+					overlayConfig.enabledDisplayIds.splice(idx, 1);
+				} else {
+					overlayConfig.enabledDisplayIds.push(displayId);
+				}
+				saveOverlayConfig();
+				applyAllPositions();
+				syncAllClones();
+			}
+
+			function getClonePosition(sourceRef, targetDisplay) {
+				const srcBounds = sourceRef.getBaseBounds();
+				const srcDisplay = getDisplayForBounds(srcBounds);
+				const relX = srcBounds.x - srcDisplay.workArea.x;
+				const relY = srcBounds.y - srcDisplay.workArea.y;
+				const offset = getDisplayOffset(targetDisplay.id);
+				return {
+					x: targetDisplay.workArea.x + relX + offset.x,
+					y: targetDisplay.workArea.y + relY + offset.y
+				};
+			}
+
+			function updateClonePosition(c, newSize) {
+				if (c.win.isDestroyed()) return;
+				const srcRef = activeOverlays.find(o => o.win === c.sourceWin);
+				if (!srcRef) return;
+				const { screen: s } = require('electron');
+				const targetDisplay = s.getAllDisplays().find(d => d.id === c.displayId);
+				if (!targetDisplay) return;
+				const pos = getClonePosition(srcRef, targetDisplay);
+				const size = newSize || c.win.getBounds();
+				c.win.setBounds({ x: pos.x, y: pos.y, width: size.width, height: size.height });
+			}
+
+			function createCloneForDisplay(sourceRef, targetDisplay) {
+				const sourceWin = sourceRef.win;
+				if (sourceWin.isDestroyed()) return null;
+				const srcBounds = sourceRef.getBaseBounds();
+				const pos = getClonePosition(sourceRef, targetDisplay);
+				const clone = new OriginalBrowserWindow({
+					width: srcBounds.width,
+					height: srcBounds.height,
+					x: pos.x, y: pos.y,
+					transparent: true,
+					frame: false,
+					alwaysOnTop: true,
+					skipTaskbar: true,
+					focusable: false,
+					show: false,
+					webPreferences: sourceRef.webPrefs ? { ...sourceRef.webPrefs } : {}
+				});
+				clone.setIgnoreMouseEvents(true);
+				const url = sourceWin.webContents.getURL();
+				if (url && url !== '' && url !== 'about:blank') {
+					clone.loadURL(url).then(() => {
+						if (!clone.isDestroyed() && sourceWin.isVisible()) clone.show();
+					}).catch(() => {});
+				}
+				const entry = { sourceWin, displayId: targetDisplay.id, win: clone };
+				cloneWindows.push(entry);
+				clone.on('closed', () => {
+					const idx = cloneWindows.indexOf(entry);
+					if (idx >= 0) cloneWindows.splice(idx, 1);
+				});
+				return entry;
+			}
+
+			function destroyClonesForDisplay(displayId) {
+				for (let i = cloneWindows.length - 1; i >= 0; i--) {
+					if (cloneWindows[i].displayId === displayId) {
+						if (!cloneWindows[i].win.isDestroyed()) cloneWindows[i].win.destroy();
+						cloneWindows.splice(i, 1);
+					}
+				}
+			}
+
+			function syncAllClones() {
+				for (const o of activeOverlays) syncClonesForOverlay(o);
+			}
+
+			function syncClonesForOverlay(ref) {
+				const { screen: s } = require('electron');
+				const displays = s.getAllDisplays();
+				const sourceWin = ref.win;
+				if (sourceWin.isDestroyed()) return;
+				const enabledSet = new Set(overlayConfig.enabledDisplayIds.map(String));
+				// Remove clones for disabled displays
+				for (let i = cloneWindows.length - 1; i >= 0; i--) {
+					const c = cloneWindows[i];
+					if (c.sourceWin !== sourceWin) continue;
+					if (!enabledSet.has(String(c.displayId))) {
+						if (!c.win.isDestroyed()) c.win.destroy();
+						cloneWindows.splice(i, 1);
+					}
+				}
+				// Create clones for ALL enabled displays (original is always hidden)
+				const existing = new Set(
+					cloneWindows.filter(c => c.sourceWin === sourceWin).map(c => String(c.displayId))
+				);
+				for (const did of enabledSet) {
+					if (existing.has(did)) continue;
+					const target = displays.find(d => String(d.id) === did);
+					if (target) createCloneForDisplay(ref, target);
+				}
+			}
+
+			function getSettingsData() {
+				const { screen: s } = require('electron');
+				const displays = s.getAllDisplays();
+				const primary = s.getPrimaryDisplay();
+				return {
+					displays: displays.map((d, i) => ({
+						id: d.id,
+						label: d.label || ('Display ' + (i + 1)),
+						width: d.size.width,
+						height: d.size.height,
+						primary: d.id === primary.id
+					})),
+					enabledIds: overlayConfig.enabledDisplayIds,
+					perDisplay: overlayConfig.perDisplay
+				};
+			}
+
+			function updateSettingsUI() {
+				if (!positionWindow || positionWindow.isDestroyed()) return;
+				positionWindow.webContents.executeJavaScript(
+					'refresh(' + JSON.stringify(getSettingsData()) + ')'
+				).catch(() => {});
+			}
+
+			function openOverlayOptionsWindow() {
 				if (positionWindow && !positionWindow.isDestroyed()) {
 					positionWindow.focus();
 					return;
 				}
+				loadOverlayConfig();
 				positionWindow = new OriginalBrowserWindow({
-					width: 250, height: 230,
+					width: 350, height: 440,
 					resizable: false, minimizable: false, maximizable: false,
-					alwaysOnTop: true, title: 'Overlay Position',
+					alwaysOnTop: true, title: 'Overlay Options',
 					autoHideMenuBar: true,
 					webPreferences: { sandbox: true }
 				});
 				positionWindow.setMenuBarVisibility(false);
 				positionWindow.loadURL('about:blank');
 
-				const updateDisplay = () => {
-					if (positionWindow && !positionWindow.isDestroyed()) {
-						positionWindow.webContents.executeJavaScript(
-							`u(${overlayOffsetX},${overlayOffsetY})`
-						).catch(() => {});
-					}
-				};
-
 				positionWindow.webContents.on('did-finish-load', () => {
+					const data = getSettingsData();
 					positionWindow.webContents.executeJavaScript(`
 						document.documentElement.innerHTML = '<head><style>' +
 						'*{margin:0;padding:0;box-sizing:border-box}' +
-						'body{font-family:system-ui,sans-serif;display:flex;flex-direction:column;' +
-						'align-items:center;justify-content:center;height:100vh;background:#1e1e1e;color:#ddd;user-select:none}' +
-						'.info{font-size:13px;color:#aaa;margin-bottom:12px}.info b{color:#fff}' +
-						'.grid{display:grid;grid-template-columns:repeat(3,48px);grid-template-rows:repeat(3,40px);gap:4px}' +
+						'body{font-family:system-ui,sans-serif;background:#1e1e1e;color:#ddd;padding:16px;user-select:none}' +
+						'.section{margin-bottom:14px}' +
+						'.stitle{font-size:12px;color:#888;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px}' +
+						'.ditem{display:flex;align-items:center;gap:8px;padding:3px 0;font-size:13px}' +
+						'.ditem input[type=checkbox]{accent-color:#5b9bd5;width:16px;height:16px}' +
+						'.ptag{color:#5b9bd5;font-size:10px;margin-left:4px}' +
+						'hr{border:none;border-top:1px solid #333;margin:10px 0}' +
+						'.sel{display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:13px}' +
+						'.sel select{background:#333;color:#eee;border:1px solid #444;border-radius:4px;padding:4px 8px;font-size:12px;flex:1}' +
+						'.info{font-size:13px;color:#aaa;margin-bottom:10px;text-align:center}.info b{color:#fff}' +
+						'.grid{display:grid;grid-template-columns:repeat(3,48px);grid-template-rows:repeat(3,40px);gap:4px;justify-content:center}' +
 						'button{border:1px solid #444;background:#333;color:#eee;border-radius:5px;cursor:pointer;' +
 						'font-size:18px;display:flex;align-items:center;justify-content:center}' +
 						'button:hover{background:#444}button:active{background:#555}' +
 						'.e{border:none;background:none;cursor:default}' +
-						'.rst{margin-top:14px;padding:6px 24px;font-size:12px;border-radius:4px}' +
+						'.rst{margin-top:10px;padding:6px 24px;font-size:12px;border-radius:4px;display:block;margin-left:auto;margin-right:auto}' +
 						'</style></head><body>' +
+						'<div class="section"><div class="stitle">Active Displays</div><div id="dl"></div></div>' +
+						'<hr>' +
+						'<div class="section"><div class="stitle">Overlay Position</div>' +
+						'<div class="sel"><label>Display:</label><select id="ds" onchange="os()"></select></div>' +
 						'<div class="info">X = <b id="ox">0</b> &nbsp; Y = <b id="oy">0</b></div>' +
 						'<div class="grid">' +
-						'<div class="e"></div><button onclick="m(0,-20)">\u25B2</button><div class="e"></div>' +
-						'<button onclick="m(-50,0)">\u25C0</button><button onclick="r()" style="font-size:11px">\u27F2</button><button onclick="m(50,0)">\u25B6</button>' +
-						'<div class="e"></div><button onclick="m(0,20)">\u25BC</button><div class="e"></div>' +
+						'<div class="e"></div><button onclick="m(0,-20)">\\u25B2</button><div class="e"></div>' +
+						'<button onclick="m(-50,0)">\\u25C0</button><button onclick="rs()" style="font-size:11px">\\u27F2</button><button onclick="m(50,0)">\\u25B6</button>' +
+						'<div class="e"></div><button onclick="m(0,20)">\\u25BC</button><div class="e"></div>' +
 						'</div>' +
-						'<button class="rst" onclick="r()">Reset</button></body>';
-						function u(x,y){document.getElementById('ox').textContent=x;document.getElementById('oy').textContent=y}
-						function m(dx,dy){console.log('OVL:move:'+dx+':'+dy)}
-						function r(){console.log('OVL:reset')}
-						u(${overlayOffsetX},${overlayOffsetY});
+						'<button class="rst" onclick="rs()">Reset</button>' +
+						'</div></body>';
+						var _d={},_s=null;
+						function init(d){_d=d;_s=d.enabledIds.length>0?d.enabledIds[0]:(d.displays[0]?d.displays[0].id:null);rn();}
+						function refresh(d){_d=d;if(_s&&!d.enabledIds.includes(_s)){_s=d.enabledIds[0]||(d.displays[0]&&d.displays[0].id);}rn();}
+						function rn(){
+							var el=document.getElementById('dl');
+							if(!_d.displays||_d.displays.length===0){el.innerHTML='<div style="color:#666;padding:8px;text-align:center;font-size:12px">No displays</div>';return;}
+							el.innerHTML=_d.displays.map(function(d){
+								var ch=_d.enabledIds.includes(d.id)?' checked':'';
+								var pr=d.primary?'<span class="ptag">(primary)</span>':'';
+								return '<div class="ditem"><input type="checkbox"'+ch+' onchange="tg('+d.id+')"><span>'+d.label+' ('+d.width+'x'+d.height+')'+pr+'</span></div>';
+							}).join('');
+							var sel=document.getElementById('ds');
+							var en=_d.displays.filter(function(d){return _d.enabledIds.includes(d.id);});
+							sel.innerHTML=en.map(function(d){
+								return '<option value="'+d.id+'"'+(d.id===_s?' selected':'')+'>'+d.label+' ('+d.width+'x'+d.height+')</option>';
+							}).join('');
+							if(!_s||!en.find(function(d){return d.id===_s;})){_s=en[0]?en[0].id:null;}
+							var k=String(_s);
+							var pd=(_d.perDisplay&&_d.perDisplay[k])||{offsetX:0,offsetY:0};
+							document.getElementById('ox').textContent=pd.offsetX||0;
+							document.getElementById('oy').textContent=pd.offsetY||0;
+						}
+						function os(){_s=parseInt(document.getElementById('ds').value);rn();}
+						function tg(id){console.log('OVL:toggle:'+id);}
+						function m(dx,dy){if(_s)console.log('OVL:move:'+_s+':'+dx+':'+dy);}
+						function rs(){if(_s)console.log('OVL:reset:'+_s);}
+						init(${JSON.stringify(data)});
 					`);
 				});
 
 				positionWindow.webContents.on('console-message', (_e, _level, msg) => {
 					if (!msg.startsWith('OVL:')) return;
 					const p = msg.split(':');
-					if (p[1] === 'move') {
-						moveAllOverlays(parseInt(p[2]) || 0, parseInt(p[3]) || 0);
+					if (p[1] === 'toggle') {
+						toggleDisplay(parseInt(p[2]));
+					} else if (p[1] === 'move') {
+						moveOverlay(parseInt(p[2]), parseInt(p[3]) || 0, parseInt(p[4]) || 0);
 					} else if (p[1] === 'reset') {
-						overlayOffsetX = 0; overlayOffsetY = 0;
-						saveOverlayConfig();
-						for (const o of activeOverlays) o.applyOffset();
+						resetOverlay(parseInt(p[2]));
 					}
-					updateDisplay();
+					updateSettingsUI();
 				});
 
 				positionWindow.on('closed', () => { positionWindow = null; });
@@ -334,7 +423,7 @@ Module.prototype.require = function(id) {
 							} catch (e) { /* screen not ready */ }
 						} else {
 							// Overlay windows on Linux:
-							// Remove type:"toolbar" \u2014 it binds the window to its parent.
+							// Remove type:"toolbar" - it binds the window to its parent.
 							// Keep focusable:true so overlay buttons can be clicked.
 							if (options.type === 'toolbar') {
 								delete options.type;
@@ -342,6 +431,8 @@ Module.prototype.require = function(id) {
 							if (options.focusable === false) {
 								options.focusable = true;
 							}
+							// Prevent auto-show: we control visibility via clones
+							options.show = false;
 						}
 					}
 
@@ -360,6 +451,7 @@ Module.prototype.require = function(id) {
 							const { execFile } = require('child_process');
 							const debug = process.env.WISPR_DEBUG === '1';
 							const win = this;
+							const overlayWebPrefs = options.webPreferences ? { ...options.webPreferences } : {};
 
 							// Save all original methods before any patching
 							const origSetIgnore = this.setIgnoreMouseEvents.bind(this);
@@ -369,11 +461,10 @@ Module.prototype.require = function(id) {
 							const origGetPos = this.getPosition.bind(this);
 
 							// --- Mouse event forwarding emulation ---
-							// {forward: true} is macOS-only. Poll cursor and keep click-through
-							// enabled unless we are over visible/interactive overlay pixels.
+							// {forward: true} is macOS-only. Poll cursor via xdotool
+							// and check pixel alpha to toggle interactivity.
 							let ignoring = false;
 							let polling = false;
-							let missCount = 0;
 
 							this.setIgnoreMouseEvents = (ignore, _opts) => {
 								origSetIgnore(ignore);
@@ -381,27 +472,15 @@ Module.prototype.require = function(id) {
 								if (ignore) startPolling();
 							};
 
-							const toDipPoint = (point) => {
-								if (!point || typeof point.x !== 'number' || typeof point.y !== 'number') {
-									return screenModule.getCursorScreenPoint();
-								}
-								if (typeof screenModule.screenToDipPoint === 'function') {
-									try {
-										return screenModule.screenToDipPoint(point);
-									} catch { /* fallback below */ }
-								}
-								return point;
-							};
-
 							const getMousePos = () => new Promise((resolve) => {
 								execFile('xdotool', ['getmouselocation', '--shell'],
 									{ timeout: 500 },
 									(err, stdout) => {
 										if (!err && stdout) {
-											const mx = parseInt((stdout.match(/X=(\d+)/) || [])[1], 10);
-											const my = parseInt((stdout.match(/Y=(\d+)/) || [])[1], 10);
+											const mx = parseInt((stdout.match(/X=(\d+)/) || [])[1]);
+											const my = parseInt((stdout.match(/Y=(\d+)/) || [])[1]);
 											if (!isNaN(mx) && !isNaN(my)) {
-												return resolve(toDipPoint({ x: mx, y: my }));
+												return resolve({ x: mx, y: my });
 											}
 										}
 										resolve(screenModule.getCursorScreenPoint());
@@ -409,49 +488,32 @@ Module.prototype.require = function(id) {
 								);
 							});
 
-							const domHitTest = (x, y) => win.webContents.executeJavaScript(
-								`(() => {
-									const els = document.elementsFromPoint ? document.elementsFromPoint(${x}, ${y}) : [];
-									const list = els && els.length ? els : [document.elementFromPoint(${x}, ${y})].filter(Boolean);
-									for (const e of list) {
-										if (!e || e === document.documentElement || e === document.body) continue;
-										const cs = getComputedStyle(e);
-										if (!cs || cs.pointerEvents === 'none' || cs.visibility === 'hidden' || Number(cs.opacity || '1') === 0) continue;
-										if (e.closest('[data-testid],[data-indicator-state],button,[role="button"],[aria-label],a,input,textarea,select')) return true;
-										const r = e.getBoundingClientRect();
-										if (r.width < 2 || r.height < 2) continue;
-										const full = r.width >= (window.innerWidth * 0.9) && r.height >= (window.innerHeight * 0.9);
-										const painted = (
-											cs.backgroundColor !== 'rgba(0, 0, 0, 0)' &&
-											cs.backgroundColor !== 'transparent'
-										) || (
-											cs.borderTopWidth !== '0px' ||
-											cs.borderRightWidth !== '0px' ||
-											cs.borderBottomWidth !== '0px' ||
-											cs.borderLeftWidth !== '0px'
-										) || (cs.boxShadow && cs.boxShadow !== 'none');
-										if (!full && painted) return true;
-									}
-									return false;
-								})()`
-							);
-
 							async function pollTick() {
 								if (win.isDestroyed()) { polling = false; return; }
 								try {
 									if (win.isVisible()) {
-										const cursor = ignoring ? await getMousePos() : screenModule.getCursorScreenPoint();
+										let cursor;
+										if (ignoring) {
+											cursor = await getMousePos();
+										} else {
+											cursor = screenModule.getCursorScreenPoint();
+										}
+
+										// Use origGetBounds for actual screen position
 										const b = origGetBounds();
 										const inside = cursor.x >= b.x && cursor.x < b.x + b.width &&
-											cursor.y >= b.y && cursor.y < b.y + b.height;
+										               cursor.y >= b.y && cursor.y < b.y + b.height;
 
-										if (inside) {
+										if (ignoring && inside) {
 											const relX = Math.max(0, Math.min(cursor.x - b.x, b.width - 1));
 											const relY = Math.max(0, Math.min(cursor.y - b.y, b.height - 1));
 
+											// Check if cursor is over non-transparent content.
 											let isHit = false;
 											try {
-												const img = await win.webContents.capturePage({ x: relX, y: relY, width: 1, height: 1 });
+												const img = await win.webContents.capturePage({
+													x: relX, y: relY, width: 1, height: 1
+												});
 												const bmp = img.toBitmap();
 												if (bmp.length >= 4 && bmp[3] > 10) {
 													isHit = true;
@@ -459,42 +521,35 @@ Module.prototype.require = function(id) {
 												}
 											} catch { /* capturePage failed */ }
 
-											if (!isHit && !win.isDestroyed()) {
+											// Fallback: DOM hit-test via elementFromPoint
+											if (!isHit && !win.isDestroyed() && ignoring) {
 												try {
-													isHit = await domHitTest(relX, relY);
-													if (isHit && debug) console.log(`[Overlay] DOM hit (${relX},${relY})`);
+													isHit = await win.webContents.executeJavaScript(
+														`(function(){` +
+														`var e=document.elementFromPoint(${relX},${relY});` +
+														`return !!(e&&e!==document.documentElement&&e!==document.body);` +
+														`})()`
+													);
+													if (isHit && debug) console.log(`[Overlay] elementFromPoint hit (${relX},${relY})`);
 												} catch { /* ignore */ }
 											}
 
 											if (!win.isDestroyed() && ignoring && isHit) {
-												if (debug) console.log('[Overlay] making interactive');
+												if (debug) console.log(`[Overlay] making interactive`);
 												origSetIgnore(false);
 												ignoring = false;
-												missCount = 0;
 												if (!_isWayland) {
 													win.moveTop();
-													execFile('xdotool', ['mousemove_relative', '--', '1', '0'], { timeout: 500 }, () => {
-														execFile('xdotool', ['mousemove_relative', '--', '-1', '0'], { timeout: 500 }, () => {});
-													});
-												}
-											} else if (!win.isDestroyed() && !ignoring) {
-												if (!isHit) {
-													missCount += 1;
-													if (missCount >= 2) {
-														if (debug) console.log('[Overlay] transparent area inside bounds - click-through');
-														origSetIgnore(true);
-														ignoring = true;
-														missCount = 0;
-													}
-												} else {
-													missCount = 0;
+													execFile('xdotool', [
+														'mousemove', '--screen', '0',
+														String(cursor.x), String(cursor.y)
+													], { timeout: 500 }, () => {});
 												}
 											}
-										} else if (!ignoring) {
+										} else if (!ignoring && !inside) {
 											if (debug) console.log('[Overlay] cursor left bounds - click-through');
 											origSetIgnore(true);
 											ignoring = true;
-											missCount = 0;
 										}
 									}
 								} catch (e) {
@@ -506,6 +561,7 @@ Module.prototype.require = function(id) {
 									polling = false;
 								}
 							}
+
 							function startPolling() {
 								if (polling) return;
 								polling = true;
@@ -514,43 +570,59 @@ Module.prototype.require = function(id) {
 
 							win.on('closed', () => { polling = false; });
 
-							// --- Overlay position offset ---
+							// --- Per-display position offset ---
+							// Original overlay is ALWAYS invisible.
+							// All visible overlays are our managed clones.
 							loadOverlayConfig();
 							let baseBounds = null;
 
-							const applyOffset = () => {
+							// Hide original: off-screen + opacity 0 (belt and suspenders)
+							const hideOriginal = () => {
 								if (win.isDestroyed()) return;
 								const b = baseBounds || origGetBounds();
-								origSetBounds({
-									...b,
-									x: b.x + overlayOffsetX,
-									y: b.y + overlayOffsetY
-								});
+								origSetBounds({ x: -99999, y: -99999, width: b.width, height: b.height });
+								try { win.setOpacity(0); } catch {}
 							};
 
-							// Intercept setBounds/setPosition: store base, apply offset
+							const applyOffset = hideOriginal;
+
+							const overlayRef = {
+								win,
+								applyOffset,
+								getBaseBounds: () => baseBounds || origGetBounds(),
+								origGetBounds,
+								origSetBounds,
+								webPrefs: overlayWebPrefs
+							};
+							activeOverlays.push(overlayRef);
+
+							// Intercept setBounds/setPosition: store base, keep hidden, sync clones
 							this.setBounds = (bounds, animate) => {
 								baseBounds = { ...bounds };
-								origSetBounds({
-									...bounds,
-									x: bounds.x + overlayOffsetX,
-									y: bounds.y + overlayOffsetY
-								}, animate);
+								origSetBounds({ ...bounds, x: -99999, y: -99999 }, animate);
+								try { win.setOpacity(0); } catch {}
+								for (const c of cloneWindows) {
+									if (c.sourceWin === win && !c.win.isDestroyed()) {
+										updateClonePosition(c, { width: bounds.width, height: bounds.height });
+									}
+								}
 							};
 
 							this.setPosition = (x, y, animate) => {
 								if (!baseBounds) baseBounds = origGetBounds();
 								baseBounds.x = x;
 								baseBounds.y = y;
-								origSetPos(
-									x + overlayOffsetX,
-									y + overlayOffsetY,
-									animate
-								);
+								origSetPos(-99999, -99999, animate);
+								try { win.setOpacity(0); } catch {}
+								for (const c of cloneWindows) {
+									if (c.sourceWin === win && !c.win.isDestroyed()) {
+										updateClonePosition(c);
+									}
+								}
 							};
 
 							// Return base (pre-offset) position so the app
-							// doesn't compound offsets on read\u2192write cycles.
+							// doesn't compound offsets on read->write cycles.
 							this.getBounds = () => {
 								if (baseBounds) return { ...baseBounds };
 								return origGetBounds();
@@ -561,48 +633,104 @@ Module.prototype.require = function(id) {
 								return origGetPos();
 							};
 
-							// Apply saved offset to initial position, then watch
-							// for app/WM-initiated repositioning permanently.
-							// On X11, WMs can reposition windows at any time (not just
-							// during startup), so we keep the listener active.
-							this.once('show', () => {
-								if (!baseBounds) baseBounds = origGetBounds();
-								if (overlayOffsetX !== 0 || overlayOffsetY !== 0) {
-									applyOffset();
-								}
+							// Intercept show()/showInactive(): NEVER let original be visible.
+							// Original stays permanently hidden; only clones are shown.
+							const origHide = win.hide.bind(win);
+							let firstShowDone = false;
+							let virtualVisible = false;
 
-								// Permanent move watcher: re-applies offset when
-								// app or WM repositions the overlay bypassing our
-								// patched setBounds/setPosition interceptors.
-								let reapplyGuard = false;
-								let reapplyDebounce = null;
-								win.on('move', () => {
-									if (overlayOffsetX === 0 && overlayOffsetY === 0) return;
-									if (reapplyGuard) return;
-									if (reapplyDebounce) clearTimeout(reapplyDebounce);
-									reapplyDebounce = setTimeout(() => {
-										if (win.isDestroyed()) return;
-										const actual = origGetBounds();
-										const expectedX = baseBounds.x + overlayOffsetX;
-										const expectedY = baseBounds.y + overlayOffsetY;
-										if (Math.abs(actual.x - expectedX) > 2 || Math.abs(actual.y - expectedY) > 2) {
-											// App/WM repositioned the overlay \u2014 adopt new base, re-apply offset
-											baseBounds = { x: actual.x, y: actual.y, width: actual.width, height: actual.height };
-											reapplyGuard = true;
-											applyOffset();
-											setTimeout(() => { reapplyGuard = false; }, 300);
+							// Override isVisible() so app logic thinks the overlay is shown
+							win.isVisible = () => virtualVisible;
+
+							win.show = function() {
+								virtualVisible = true;
+								if (!firstShowDone) {
+									firstShowDone = true;
+									if (!baseBounds) {
+										// Capture intended position before hiding
+										const b = origGetBounds();
+										if (b.x > -9000) baseBounds = { ...b };
+									}
+									hideOriginal();
+									// Do NOT call origShow() — original stays truly hidden.
+									// webContents renders off-screen; clones display the content.
+									// Create clones after brief delay for content to load
+									setTimeout(() => syncClonesForOverlay(overlayRef), 500);
+								} else {
+									hideOriginal();
+								}
+								for (const c of cloneWindows) {
+									if (c.sourceWin === win && !c.win.isDestroyed()) c.win.show();
+								}
+							};
+
+							win.showInactive = function() { win.show(); };
+
+							win.hide = function() {
+								virtualVisible = false;
+								origHide();
+								for (const c of cloneWindows) {
+									if (c.sourceWin === win && !c.win.isDestroyed()) c.win.hide();
+								}
+							};
+
+							// Content sync: forward IPC messages to clones
+							const origWCSend = win.webContents.send.bind(win.webContents);
+							win.webContents.send = function(channel, ...args) {
+								origWCSend(channel, ...args);
+								for (const c of cloneWindows) {
+									if (c.sourceWin === win && !c.win.isDestroyed()) {
+										try { c.win.webContents.send(channel, ...args); } catch {}
+									}
+								}
+							};
+
+							// Content sync: forward URL navigation to clones
+							const origLoadURL = win.loadURL.bind(win);
+							win.loadURL = function(url, opts) {
+								const p = origLoadURL(url, opts);
+								for (const c of cloneWindows) {
+									if (c.sourceWin === win && !c.win.isDestroyed()) {
+										c.win.loadURL(url, opts).catch(() => {});
+									}
+								}
+								return p;
+							};
+
+							// Move watcher: if app/WM somehow makes original visible, re-hide
+							let reapplyGuard = false;
+							let reapplyDebounce = null;
+							win.on('move', () => {
+								if (reapplyGuard) return;
+								if (reapplyDebounce) clearTimeout(reapplyDebounce);
+								reapplyDebounce = setTimeout(() => {
+									if (win.isDestroyed()) return;
+									const actual = origGetBounds();
+									if (actual.x > -9999 && actual.y > -9999) {
+										baseBounds = { ...actual };
+										reapplyGuard = true;
+										hideOriginal();
+										for (const c of cloneWindows) {
+											if (c.sourceWin === win && !c.win.isDestroyed()) {
+												updateClonePosition(c, { width: actual.width, height: actual.height });
+											}
 										}
-									}, 200);
-								});
+										setTimeout(() => { reapplyGuard = false; }, 300);
+									}
+								}, 50);
 							});
 
-							// Track overlay for bulk repositioning
-							const overlayRef = { win, applyOffset };
-							activeOverlays.push(overlayRef);
-
+							// Cleanup on close
 							win.on('closed', () => {
+								polling = false;
 								const idx = activeOverlays.indexOf(overlayRef);
 								if (idx >= 0) activeOverlays.splice(idx, 1);
+								for (let i = cloneWindows.length - 1; i >= 0; i--) {
+									if (cloneWindows[i].sourceWin === win) {
+										if (!cloneWindows[i].win.isDestroyed()) cloneWindows[i].win.destroy();
+										cloneWindows.splice(i, 1);
+									}
+								}
 							});
 						}
 
@@ -713,19 +841,19 @@ Module.prototype.require = function(id) {
 				}
 			};
 
-			// Inject "Overlay Position..." item into the tray context menu
+			// Inject "Overlay Options..." item into the tray context menu
 			if (process.platform === 'linux' && result.Tray) {
 				const origSetCtxMenu = result.Tray.prototype.setContextMenu;
 				result.Tray.prototype.setContextMenu = function(menu) {
 					if (menu) {
-						const MARKER = 'Overlay Position';
+						const MARKER = 'Overlay Options';
 						const hasOurs = menu.items.some(i => i.label === MARKER);
 						if (!hasOurs) {
 							const { MenuItem } = require('electron');
 							menu.append(new MenuItem({ type: 'separator' }));
 							menu.append(new MenuItem({
 								label: MARKER,
-								click: () => openOverlayPositionWindow()
+								click: () => openOverlayOptionsWindow()
 							}));
 						}
 					}
@@ -780,6 +908,23 @@ Module.prototype.require = function(id) {
 							result.app.setLoginItemSettings({ openAtLogin: true });
 						}
 					} catch (e) { /* ignore */ }
+
+					// Display hotplug: update settings UI and cleanup clones
+					try {
+						const { screen: s } = require('electron');
+						s.on('display-added', () => {
+							updateSettingsUI();
+						});
+						s.on('display-removed', (_event, oldDisplay) => {
+							destroyClonesForDisplay(oldDisplay.id);
+							const idx = overlayConfig.enabledDisplayIds.indexOf(oldDisplay.id);
+							if (idx >= 0) {
+								overlayConfig.enabledDisplayIds.splice(idx, 1);
+								saveOverlayConfig();
+							}
+							updateSettingsUI();
+						});
+					} catch { /* ignore */ }
 				});
 			}
 		}
