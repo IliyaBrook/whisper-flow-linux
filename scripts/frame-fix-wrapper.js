@@ -223,6 +223,47 @@ Module.prototype.require = function(id) {
 				} catch { /* ignore */ }
 			}
 
+			// --- Main window position persistence ---
+			let mainWindowBoundsPath = null;
+
+			function loadMainWindowBounds() {
+				try {
+					const path = require('path');
+					const fs = require('fs');
+					mainWindowBoundsPath = path.join(
+						result.app.getPath('userData'),
+						'linux-window-bounds.json'
+					);
+					const data = JSON.parse(fs.readFileSync(mainWindowBoundsPath, 'utf8'));
+					if (typeof data.x === 'number' && typeof data.y === 'number' &&
+						typeof data.width === 'number' && typeof data.height === 'number') {
+						return data;
+					}
+				} catch {
+					if (!mainWindowBoundsPath) {
+						try {
+							mainWindowBoundsPath = require('path').join(
+								result.app.getPath('userData'),
+								'linux-window-bounds.json'
+							);
+						} catch { /* ignore */ }
+					}
+				}
+				return null;
+			}
+
+			function saveMainWindowBounds(bounds) {
+				if (!mainWindowBoundsPath) return;
+				try {
+					const fs = require('fs');
+					fs.writeFileSync(
+						mainWindowBoundsPath,
+						JSON.stringify({ x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height }),
+						'utf8'
+					);
+				} catch { /* ignore */ }
+			}
+
 			function moveAllOverlays(dx, dy) {
 				overlayOffsetX += dx;
 				overlayOffsetY += dy;
@@ -830,6 +871,51 @@ Module.prototype.require = function(id) {
 										}
 									}, 100);
 								}, 50);
+							});
+
+							// --- Main window position persistence ---
+							const savedBounds = loadMainWindowBounds();
+							if (savedBounds) {
+								const restoreBounds = () => {
+									if (this.isDestroyed()) return;
+									try {
+										const { screen: screenMod } = require('electron');
+										const displays = screenMod.getAllDisplays();
+										const isVisible = displays.some(d => {
+											const b = d.bounds;
+											return savedBounds.x < b.x + b.width &&
+												savedBounds.x + savedBounds.width > b.x &&
+												savedBounds.y < b.y + b.height &&
+												savedBounds.y + savedBounds.height > b.y;
+										});
+										if (isVisible) {
+											this.setBounds(savedBounds);
+										}
+									} catch { /* ignore */ }
+								};
+								this.once('ready-to-show', () => {
+									restoreBounds();
+									// Re-apply after frame calibration completes
+									setTimeout(() => restoreBounds(), 200);
+								});
+							}
+
+							let boundsTimer = null;
+							const debounceSaveBounds = () => {
+								if (boundsTimer) clearTimeout(boundsTimer);
+								boundsTimer = setTimeout(() => {
+									if (!this.isDestroyed() && !this.isMaximized() && !this.isFullScreen()) {
+										saveMainWindowBounds(this.getBounds());
+									}
+								}, 500);
+							};
+
+							this.on('move', debounceSaveBounds);
+							this.on('resize', debounceSaveBounds);
+							this.on('close', () => {
+								if (!this.isMaximized() && !this.isFullScreen()) {
+									saveMainWindowBounds(this.getBounds());
+								}
 							});
 
 							this.on('focus', () => {
