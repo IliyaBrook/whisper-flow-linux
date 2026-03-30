@@ -103,23 +103,27 @@ for (const [x11Code, vkCode] of Object.entries(X11_TO_VK)) {
   }
 }
 
-// Evdev mouse button codes (BTN_*) → Windows VK codes
-// These are EV_KEY events with codes in the 0x110+ range
+// Evdev mouse button codes (BTN_*) → Electron OS button index
+// The Electron app's mouse VK mapping (c.b9 / object 'o') expects OS button
+// indices: {2: mouse_middle, 3: mouse4, 4: mouse5, 5: mouse6, ...}
+// NOT Windows VK codes. On Windows the C# helper sends OS button numbers directly.
 const EVDEV_MOUSE_BTN_TO_VK = {
-  272: 1,  // BTN_LEFT    → VK_LBUTTON
-  273: 2,  // BTN_RIGHT   → VK_RBUTTON
-  274: 4,  // BTN_MIDDLE  → VK_MBUTTON
-  275: 5,  // BTN_SIDE    → VK_XBUTTON1 (Mouse 4 / Back)
-  276: 6,  // BTN_EXTRA   → VK_XBUTTON2 (Mouse 5 / Forward)
+  272: 0,  // BTN_LEFT    → OS button 0
+  273: 1,  // BTN_RIGHT   → OS button 1
+  274: 2,  // BTN_MIDDLE  → OS button 2 → mouse_middle (4098)
+  275: 3,  // BTN_SIDE    → OS button 3 → mouse4 (4099)
+  276: 4,  // BTN_EXTRA   → OS button 4 → mouse5 (4100)
 };
 
-// X11 button numbers (from xinput) → Windows VK codes
+// X11 button numbers (from xinput) → Electron OS button index
+// xinput uses 1-based button numbers; we convert to 0-based OS button index.
+// Buttons 4-7 are scroll wheel and are filtered out in _parseXinputLine.
 const X11_BUTTON_TO_VK = {
-  1: 1,  // Left       → VK_LBUTTON
-  2: 4,  // Middle     → VK_MBUTTON
-  3: 2,  // Right      → VK_RBUTTON
-  8: 5,  // Back/Side  → VK_XBUTTON1 (Mouse 4)
-  9: 6,  // Forward    → VK_XBUTTON2 (Mouse 5)
+  1: 0,  // Left       → OS button 0
+  2: 2,  // Middle     → OS button 2 → mouse_middle (4098)
+  3: 1,  // Right      → OS button 1
+  8: 3,  // Back/Side  → OS button 3 → mouse4 (4099)
+  9: 4,  // Forward    → OS button 4 → mouse5 (4100)
 };
 
 // sizeof(struct input_event) on 64-bit Linux
